@@ -1,0 +1,17 @@
+[package]
+name = "androidpc-linux-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+androidpc-runtime-api = { path = "../runtime-api" }
+androidpc-configuration = { path = "../configuration" }
+androidpc-logging = { path = "../logging" }
+androidpc-filesystem = { path = "../filesystem" }
+androidpc-process = { path = "../process" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

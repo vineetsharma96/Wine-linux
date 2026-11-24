@@ -1,0 +1,29 @@
+# Rust build artifacts
+target/
+rust/target/
+**/*.rs.bk
+*.pdb
+
+# Gradle & Android build artifacts
+.gradle/
+android/.gradle/
+android/app/build/
+android/build/
+build/
+local.properties
+.cxx/
+android/app/.cxx/
+
+# Keep precompiled JNI engine library
+!android/app/src/main/jniLibs/arm64-v8a/libandroidpc_engine.so
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

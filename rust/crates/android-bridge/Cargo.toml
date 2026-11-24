@@ -1,0 +1,30 @@
+[package]
+name = "androidpc-android-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "androidpc_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+androidpc-runtime-api = { path = "../runtime-api" }
+androidpc-configuration = { path = "../configuration" }
+androidpc-logging = { path = "../logging" }
+androidpc-downloader = { path = "../downloader" }
+androidpc-filesystem = { path = "../filesystem" }
+androidpc-process = { path = "../process" }
+androidpc-linux-runtime = { path = "../linux-runtime" }
+androidpc-display = { path = "../display" }
+androidpc-terminal = { path = "../terminal" }
+androidpc-wine = { path = "../wine" }
+androidpc-core = { path = "../core" }
+jni.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tar.workspace = true
+flate2.workspace = true

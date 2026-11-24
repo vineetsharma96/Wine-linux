@@ -1,0 +1,14 @@
+[package]
+name = "androidpc-terminal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+androidpc-runtime-api = { path = "../runtime-api" }
+androidpc-logging = { path = "../logging" }
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+libc.workspace = true

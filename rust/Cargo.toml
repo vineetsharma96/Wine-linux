@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/runtime-api",
+    "crates/configuration",
+    "crates/logging",
+    "crates/downloader",
+    "crates/filesystem",
+    "crates/process",
+    "crates/linux-runtime",
+    "crates/display",
+    "crates/terminal",
+    "crates/wine",
+    "crates/core",
+    "crates/android-bridge",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Android PC Environment Developers"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/android-pc-environment/android-pc-environment"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+jni = { version = "0.21", default-features = false }
+sha2 = "0.10"
+hex = "0.4"
+tar = "0.4"
+flate2 = "1.0"
+libc = "0.2"

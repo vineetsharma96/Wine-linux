@@ -1,0 +1,48 @@
+name: Android PC Environment CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  rust-tests:
+    name: Rust Workspace Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-unknown-linux-gnu
+
+      - name: Run Host Tests
+        run: |
+          cd rust
+          cargo test --workspace --verbose
+
+  cross-compile:
+    name: Android ARM64 Cross-Compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust & Android Target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26b
+
+      - name: Build Android ARM64 Library
+        run: |
+          cd rust
+          cargo ndk --target aarch64-linux-android --platform 26 -- build -p androidpc-android-bridge --release

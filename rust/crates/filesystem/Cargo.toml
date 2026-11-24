@@ -1,0 +1,15 @@
+[package]
+name = "androidpc-filesystem"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+androidpc-runtime-api = { path = "../runtime-api" }
+androidpc-logging = { path = "../logging" }
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tar.workspace = true
+flate2.workspace = true
