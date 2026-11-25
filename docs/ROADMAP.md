@@ -23,9 +23,9 @@
 - [ ] Optional Termux:X11 display bridge for low-latency hardware acceleration.
 
 ## Phase 3: Hardware Acceleration & Audio
-- [ ] VirGL / Turnip / Zink hardware acceleration layer.
-- [ ] PulseAudio server integration with OpenSL ES / AAudio bridge for low-latency sound.
-- [ ] Android input handling (multi-touch, physical keyboard shortcuts, mouse scroll wheel).
+- [x] VirGL / Turnip / Zink hardware acceleration environment layer (`GpuAccelerationMode` + `SettingsScreen.kt`).
+- [x] Audio TCP sink (`127.0.0.1:4713`) with Android `AudioTrack` bridge (`AudioBridgePlayer`).
+- [x] Android input handling (touch-to-mouse, drag, virtual keyboard Ctrl/Alt modifiers).
 
 ## Phase 4: Windows Application Compatibility (Future)
 - [ ] Box64 userspace emulation for x86_64 Windows binaries on ARM64.

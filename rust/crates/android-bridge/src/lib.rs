@@ -1693,3 +1693,47 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
     result.unwrap_or(-99)
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeSetGpuAccelerationMode(
+    mut env: JNIEnv,
+    _class: JClass,
+    mode: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mode_str: String = match env.get_string(&mode) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            core.set_gpu_acceleration_mode(androidpc_display::GpuAccelerationMode::parse(&mode_str));
+            0
+        } else {
+            -2
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeGetGpuAccelerationMode(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let mode_str = guard
+            .as_ref()
+            .map(|c| c.get_gpu_acceleration_mode().as_str())
+            .unwrap_or("software");
+        create_jstring(&mut env, mode_str)
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+

@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
                     var activeDisplayPort by remember { mutableIntStateOf(5901) }
                     var audioEnabled by remember { mutableStateOf(true) }
                     var wineArch by remember { mutableStateOf("win64") }
+                    var gpuMode by remember { mutableStateOf("software") }
 
                     val refreshData: () -> Unit = {
                         isRefreshing = true
@@ -208,9 +209,16 @@ class MainActivity : ComponentActivity() {
                             displayResolution = displayResolution,
                             audioEnabled = audioEnabled,
                             wineArch = wineArch,
+                            gpuMode = gpuMode,
                             onResolutionChange = { displayResolution = it },
                             onAudioEnabledChange = { audioEnabled = it },
                             onWineArchChange = { wineArch = it },
+                            onGpuModeChange = { newMode ->
+                                gpuMode = newMode
+                                lifecycleScope.launch {
+                                    NativeBridge.setGpuAccelerationMode(newMode)
+                                }
+                            },
                             onBack = { currentScreen = Screen.Dashboard }
                         )
                     }

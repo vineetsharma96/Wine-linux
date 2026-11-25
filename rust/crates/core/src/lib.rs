@@ -84,6 +84,7 @@ pub struct EngineCore {
     pub audio_sink: RwLock<AudioTcpSink>,
     pub wine_supervisor: Arc<WineProcessSupervisor>,
     pub vm_supervisor: QemuSupervisor,
+    pub gpu_mode: RwLock<androidpc_display::GpuAccelerationMode>,
 }
 
 impl EngineCore {
@@ -121,6 +122,7 @@ impl EngineCore {
             audio_sink: RwLock::new(AudioTcpSink::default()),
             wine_supervisor: Arc::new(WineProcessSupervisor::new()),
             vm_supervisor,
+            gpu_mode: RwLock::new(androidpc_display::GpuAccelerationMode::default()),
         };
 
         core.register_default_distributions();
@@ -315,7 +317,8 @@ impl EngineCore {
                     if let Some(sh_cmd) = guest_sh {
                         if proot_bin.proot_binary().exists() {
                             let proot_args = proot_bin.build_proot_command(mgr.config(), &sh_cmd);
-                            let proot_env = mgr.build_guest_env(&[]);
+                            let gpu_env = self.get_gpu_acceleration_mode().build_guest_env();
+                            let proot_env = mgr.build_guest_env(&gpu_env);
                             let prog = proot_bin.proot_binary().to_string_lossy().to_string();
                             let _ = session.spawn_shell(&prog, &proot_args, &proot_env, None);
                             attached = true;
@@ -754,6 +757,20 @@ impl EngineCore {
 
     pub fn list_vms(&self) -> Vec<VmStatusInfo> {
         self.vm_supervisor.list_vms()
+    }
+
+    pub fn set_gpu_acceleration_mode(&self, mode: androidpc_display::GpuAccelerationMode) {
+        if let Ok(mut guard) = self.gpu_mode.write() {
+            *guard = mode;
+            info!("GPU acceleration mode set to {:?}", mode);
+        }
+    }
+
+    pub fn get_gpu_acceleration_mode(&self) -> androidpc_display::GpuAccelerationMode {
+        self.gpu_mode
+            .read()
+            .map(|g| *g)
+            .unwrap_or_default()
     }
 }
 

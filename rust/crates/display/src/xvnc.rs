@@ -65,10 +65,22 @@ impl DisplayBackend for XvncDisplayBackend {
         );
 
         let args = Self::build_xvnc_args(config);
+        let xvnc_dir = self
+            .xvnc_binary_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let ld_path = format!(
+            "{}:{}",
+            xvnc_dir.join("lib").display(),
+            xvnc_dir.parent().map(|p| p.join("lib").display().to_string()).unwrap_or_default()
+        );
         let cmd = ProcessCommand {
             program: self.xvnc_binary_path.to_string_lossy().to_string(),
             args,
-            env: vec![("DISPLAY".to_string(), format!(":{}", config.display_number))],
+            env: vec![
+                ("DISPLAY".to_string(), format!(":{}", config.display_number)),
+                ("LD_LIBRARY_PATH".to_string(), ld_path),
+            ],
             cwd: None,
             uid: None,
             gid: None,

@@ -78,6 +78,8 @@ object NativeBridge {
     private external fun nativeDeleteVm(vmId: String): Int
     private external fun nativeListVms(): String
     private external fun nativeCreateTerminalForEnv(sessionId: String, envId: String, cols: Int, rows: Int): Int
+    private external fun nativeSetGpuAccelerationMode(mode: String): Int
+    private external fun nativeGetGpuAccelerationMode(): String
 
     suspend fun initEngine(context: Context): Result<Int> = withContext(Dispatchers.IO) {
         if (!isLoaded) {
@@ -662,6 +664,25 @@ object NativeBridge {
             if (fd >= 0) Result.success(fd) else Result.failure(RuntimeException("Create terminal failed ($fd)"))
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    suspend fun setGpuAccelerationMode(mode: String): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeSetGpuAccelerationMode(mode)
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Set GPU mode failed ($code)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getGpuAccelerationMode(): String = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext "software"
+        try {
+            nativeGetGpuAccelerationMode()
+        } catch (e: Exception) {
+            "software"
         }
     }
 }

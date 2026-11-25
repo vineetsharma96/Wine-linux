@@ -25,9 +25,11 @@ fun SettingsScreen(
     displayResolution: Pair<Int, Int>,
     audioEnabled: Boolean,
     wineArch: String,
+    gpuMode: String = "software",
     onResolutionChange: (Pair<Int, Int>) -> Unit,
     onAudioEnabledChange: (Boolean) -> Unit,
     onWineArchChange: (String) -> Unit,
+    onGpuModeChange: (String) -> Unit = {},
     onBack: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -100,6 +102,44 @@ fun SettingsScreen(
                             ) {
                                 Text(
                                     "${res.first}x${res.second}",
+                                    color = if (selected) AccentCyan else TextSecondary,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Hardware Graphics Acceleration Selector (Phase 3)
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, CardBorder, RoundedCornerShape(10.dp)),
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text("Graphics Acceleration (Mesa / Vulkan)", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(
+                            "software" to "LLVMpipe",
+                            "virgl" to "VirGL",
+                            "turnip_zink" to "Turnip+Zink"
+                        ).forEach { (id, label) ->
+                            val selected = gpuMode == id
+                            OutlinedButton(
+                                onClick = { onGpuModeChange(id) },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (selected) AccentPurple.copy(alpha = 0.25f) else SurfaceContainer
+                                ),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    label,
                                     color = if (selected) AccentCyan else TextSecondary,
                                     style = MaterialTheme.typography.labelSmall
                                 )
