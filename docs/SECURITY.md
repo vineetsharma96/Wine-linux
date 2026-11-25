@@ -24,3 +24,11 @@
   1. `cd rust && cargo test --workspace`
   2. `cargo ndk -t arm64-v8a -o ../android/app/src/main/jniLibs build --release`
   3. `cd ../android && gradle assembleDebug` (or `assembleRelease` with release signing inputs set).
+
+## 5. Phase 4 Windows Compatibility Security & Trust Boundaries
+- **PRoot Boundary Honesty (CRITICAL)**: PRoot (`ptrace` syscall path translation) is a **compatibility and filesystem-namespace tool, NOT a hardware VM or kernel security sandbox**. All PRoot guest processes—including Box64, Wine `11.0`, and Windows executables—execute inside the same Android application UID (`u0_aXXX`) and share the Android app sandbox boundary. Users must treat untrusted Windows executables accordingly and never assume VM-grade kernel isolation.
+- **Isolated Wine Prefixes**: Every Wine prefix resides in `<base_data_dir>/wine_prefixes/<prefix_id>` with strict ID validation (`^[a-zA-Z0-9_-]{1,64}$`) to block directory traversal. Prefixes isolate `drive_c`, registry hives, DLL overrides, and `wineserver` sockets from one another and from the host Ubuntu/Debian rootfs.
+- **Backup & Restore Integrity**: Wine prefix backups generate companion `.sha256` digests. Restore verifies the SHA-256 digest before extraction, validates every archive entry against Zip-Slip traversal via `androidpc-security`, and unpacks into a staging directory before atomic promotion.
+- **No Unverified Scripts or Proprietary Bundles**: The Dependency Manager (`rust/crates/dependency-manager`) prohibits blind `curl | sh` downloads and does not bundle unlicensed proprietary Microsoft redistributables (`vc_redist`, `.NET`, DirectX). Open-source artifacts (`Box64`, `Wine`, `Mesa Turnip`, `virglrenderer`, `DXVK`, `VKD3D-Proton`, `Wine Mono`) require SHA-256 verification; proprietary Windows runtimes use a user-supplied official installer workflow inside an isolated prefix.
+- **Scoped Process Termination & Log Redaction**: Stopping a Windows app runs `wineserver -k`/`-k9` strictly against its isolated `WINEPREFIX` (never global `killall`). Per-app diagnostic log buffers (`rust/crates/windows-apps`) are bounded in line count and redact environment values whose keys match credential patterns (`PASSWORD`, `TOKEN`, `SECRET`, `KEY`, `AUTH`).
+

@@ -17,6 +17,15 @@ android {
         versionName = "0.1.0-alpha.0"
         val publicKey = rootfsReleaseKey.get().takeIf { it.matches(Regex("[0-9a-fA-F]{64}")) }.orEmpty()
         buildConfigField("String", "ROOTFS_PUBLIC_KEY_HEX", "\"" + publicKey + "\"")
+        buildConfigField("String", "BOX64_VERSION", "\"0.4.4\"")
+        buildConfigField("String", "WINE_VERSION", "\"11.0\"")
+        buildConfigField("String", "TURNIP_VERSION", "\"26.3.1\"")
+        buildConfigField("String", "VIRGL_VERSION", "\"1.3.0\"")
+        buildConfigField("String", "DXVK_VERSION", "\"2.7.1\"")
+        buildConfigField("String", "VKD3D_VERSION", "\"3.1\"")
+        buildConfigField("String", "QEMU_VERSION", "\"11.1.3\"")
+        buildConfigField("String", "EDK2_VERSION", "\"edk2-stable202608\"")
+        buildConfigField("String", "LIBSLIRP_VERSION", "\"4.9.7\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

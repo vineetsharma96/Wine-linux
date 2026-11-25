@@ -20,7 +20,10 @@ androidpc-linux-runtime = { path = "../linux-runtime" }
 androidpc-display = { path = "../display" }
 androidpc-terminal = { path = "../terminal" }
 androidpc-box64 = { path = "../box64" }
+androidpc-graphics-backend = { path = "../graphics-backend" }
 androidpc-wine = { path = "../wine" }
+androidpc-dependency-manager = { path = "../dependency-manager" }
+androidpc-windows-apps = { path = "../windows-apps" }
 androidpc-vm = { path = "../vm" }
 androidpc-core = { path = "../core" }
 jni.workspace = true

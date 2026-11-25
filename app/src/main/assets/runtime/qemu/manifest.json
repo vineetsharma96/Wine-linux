@@ -1,0 +1,42 @@
+{
+  "component": "qemu",
+  "version": "11.1.3",
+  "release_date": "2026-10-01",
+  "upstream_url": "https://www.qemu.org/",
+  "source_repo": "https://gitlab.com/qemu-project/qemu",
+  "source_tarball": "https://download.qemu.org/qemu-11.1.3.tar.xz",
+  "license": "GPL-2.0-only (softmmu/tcg core) + LGPL-2.1 / MIT / BSD components",
+  "host_arch": "aarch64-android",
+  "targets": [
+    "aarch64-softmmu",
+    "x86_64-softmmu"
+  ],
+  "default_accelerator": "tcg,thread=multi",
+  "opportunistic_accelerator": "kvm (ARM64 guest only if /dev/kvm is R/W accessible without root)",
+  "avf_status": "Unavailable to ordinary third-party apps (MANAGE_VIRTUAL_MACHINE is @SystemApi)",
+  "bundled_dependencies": {
+    "libslirp": {
+      "version": "4.9.7",
+      "source_repo": "https://gitlab.freedesktop.org/slirp/libslirp",
+      "license": "BSD-3-Clause"
+    },
+    "edk2": {
+      "version": "edk2-stable202608",
+      "source_repo": "https://github.com/tianocore/edk2",
+      "license": "BSD-2-Clause-Patent",
+      "firmware_images": [
+        "AAVMF_CODE.fd",
+        "AAVMF_VARS.fd",
+        "OVMF_CODE.fd",
+        "OVMF_VARS.fd"
+      ]
+    }
+  },
+  "binaries": [
+    "qemu-system-aarch64",
+    "qemu-system-x86_64",
+    "qemu-img"
+  ],
+  "build_script": "scripts/build_qemu_arm64.sh",
+  "redistribution_notes": "GPL-2.0 source distribution compliance required when redistributing compiled QEMU binaries; NO copyrighted guest OS images or proprietary firmware are bundled."
+}

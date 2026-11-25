@@ -29,6 +29,7 @@ class MainActivity : ComponentActivity() {
         Splash,
         Onboarding,
         Dashboard,
+        WindowsCompatibility,
         Compatibility,
         Terminal,
         HealthCheck,
@@ -60,6 +61,8 @@ class MainActivity : ComponentActivity() {
                     var healthReport by remember { mutableStateOf<HealthReportData?>(null) }
                     var diagnostics by remember { mutableStateOf<SystemDiagnosticsData?>(null) }
                     var box64Status by remember { mutableStateOf<Box64InstallationStatusData?>(null) }
+                    var windowsOverview by remember { mutableStateOf<WindowsCompatibilityOverviewData?>(null) }
+                    var windowsCompatInitialTab by remember { mutableIntStateOf(0) }
                     var environments by remember { mutableStateOf<List<EnvironmentConfigData>>(emptyList()) }
                     var backupSourceId by remember { mutableStateOf<String?>(null) }
                     var environmentStates by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
@@ -103,6 +106,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             box64Status = NativeBridge.getBox64Status(applicationContext, selectedEnvId)
+                            windowsOverview = WindowsCompatibilityBridge.getOverview(applicationContext, selectedEnvId)
                             NativeBridge.getWineStatus(selectedEnvId).onSuccess { wineStatus = it }
                             isRefreshing = false
                         }
@@ -143,8 +147,14 @@ class MainActivity : ComponentActivity() {
                         drawerContent = {
                             StarNavigationDrawerSheet(
                                 currentScreen = currentScreen,
+                                windowsCompatTab = windowsCompatInitialTab,
                                 engineStatus = engineStatus,
-                                onSelect = navigateFromDrawer
+                                onSelect = navigateFromDrawer,
+                                onSelectWindowsTab = { tab ->
+                                    uiScope.launch { drawerState.close() }
+                                    windowsCompatInitialTab = tab
+                                    currentScreen = Screen.WindowsCompatibility
+                                }
                             )
                         }
                     ) {
@@ -216,6 +226,11 @@ class MainActivity : ComponentActivity() {
                                     currentScreen = Screen.EnvironmentBackups
                                 },
                                 onOpenCompatibility = { currentScreen = Screen.Compatibility },
+                                windowsOverview = windowsOverview,
+                                onOpenWindowsCompatibility = { tab ->
+                                    windowsCompatInitialTab = tab
+                                    currentScreen = Screen.WindowsCompatibility
+                                },
                                 onInitWinePrefix = {
                                     lifecycleScope.launch {
                                         NativeBridge.initWinePrefix(selectedEnvId, "/home/user/.wine", wineArch)
@@ -260,6 +275,17 @@ class MainActivity : ComponentActivity() {
                                 onOpenVirtualMachines = { currentScreen = Screen.VirtualMachines },
                                 onOpenArtifacts = { currentScreen = Screen.Artifacts },
                                 onOpenSettings = { currentScreen = Screen.Settings }
+                            )
+                            Screen.WindowsCompatibility -> WindowsCompatibilityScreen(
+                                environments = environments,
+                                selectedEnvId = selectedEnvId,
+                                initialTab = windowsCompatInitialTab,
+                                onSelectEnv = { selectedEnvId = it },
+                                onOpenBox64 = { currentScreen = Screen.Compatibility },
+                                onBack = {
+                                    refreshData()
+                                    currentScreen = Screen.Dashboard
+                                }
                             )
                             Screen.Compatibility -> CompatibilityScreen(
                                 environments = environments,
@@ -402,8 +428,10 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun StarNavigationDrawerSheet(
     currentScreen: MainActivity.Screen,
+    windowsCompatTab: Int,
     engineStatus: EngineStatusData?,
-    onSelect: (MainActivity.Screen) -> Unit
+    onSelect: (MainActivity.Screen) -> Unit,
+    onSelectWindowsTab: (Int) -> Unit
 ) {
     ModalDrawerSheet(
         drawerContainerColor = SurfaceDark,
@@ -450,6 +478,30 @@ private fun StarNavigationDrawerSheet(
         }
         DrawerItem("Terminal", Icons.Filled.Terminal, currentScreen == MainActivity.Screen.Terminal) {
             onSelect(MainActivity.Screen.Terminal)
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        DrawerSectionHeader("WINDOWS COMPATIBILITY")
+        DrawerItem(
+            "Windows Apps",
+            Icons.Filled.Apps,
+            currentScreen == MainActivity.Screen.WindowsCompatibility && windowsCompatTab == 0
+        ) {
+            onSelectWindowsTab(0)
+        }
+        DrawerItem(
+            "Wine & Prefixes",
+            Icons.Filled.FolderCopy,
+            currentScreen == MainActivity.Screen.WindowsCompatibility && windowsCompatTab == 1
+        ) {
+            onSelectWindowsTab(1)
+        }
+        DrawerItem(
+            "Graphics & DXVK",
+            Icons.Filled.Tune,
+            currentScreen == MainActivity.Screen.WindowsCompatibility && windowsCompatTab == 2
+        ) {
+            onSelectWindowsTab(2)
         }
         DrawerItem("Box64 Compatibility", Icons.Filled.Memory, currentScreen == MainActivity.Screen.Compatibility) {
             onSelect(MainActivity.Screen.Compatibility)

@@ -1,0 +1,46 @@
+{
+  "target_reference_device": {
+    "model": "Xiaomi Pad 7",
+    "soc": "Qualcomm Snapdragon 7+ Gen 3",
+    "gpu": "Qualcomm Adreno 732 (a7xx)",
+    "kernel_interface": "/dev/kgsl-3d0"
+  },
+  "backends": [
+    {
+      "id": "turnip",
+      "component": "Mesa Turnip (freedreno Vulkan ICD)",
+      "pinned_version": "26.3.1",
+      "license": "MIT",
+      "upstream_url": "https://gitlab.freedesktop.org/mesa/mesa",
+      "supports_opengl": true,
+      "supports_vulkan": true,
+      "dxvk_eligible_when_operational": true,
+      "vkd3d_requires_verified_extensions": true,
+      "notes": "Requires accessible /dev/kgsl-3d0 without root, guest ARM64 glibc Mesa build, and live Vulkan device creation verification."
+    },
+    {
+      "id": "virgl",
+      "component": "virglrenderer + Mesa virpipe",
+      "pinned_version": "1.3.0",
+      "license": "MIT",
+      "upstream_url": "https://gitlab.freedesktop.org/virgl/virglrenderer",
+      "supports_opengl": true,
+      "supports_vulkan": false,
+      "dxvk_eligible_when_operational": false,
+      "vkd3d_requires_verified_extensions": false,
+      "notes": "OpenGL-only IPC acceleration via host virgl_test_server (Android EGL/GLES). Cannot drive DXVK or VKD3D-Proton."
+    },
+    {
+      "id": "software",
+      "component": "Mesa LLVMpipe / Lavapipe",
+      "pinned_version": "26.3.1",
+      "license": "MIT",
+      "upstream_url": "https://docs.mesa3d.org/",
+      "supports_opengl": true,
+      "supports_vulkan": false,
+      "dxvk_eligible_when_operational": false,
+      "vkd3d_requires_verified_extensions": false,
+      "notes": "Guaranteed CPU fallback ensuring Linux XFCE desktop and Wine apps remain usable without hardware acceleration."
+    }
+  ]
+}

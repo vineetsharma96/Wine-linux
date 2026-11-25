@@ -15,6 +15,12 @@ object AssetInstaller {
         val artifactsDir = File(context.filesDir, "artifacts").apply { mkdirs() }
         val libDir = File(artifactsDir, "lib").apply { mkdirs() }
         val box64Dir = File(artifactsDir, "box64").apply { mkdirs() }
+        val wineDir = File(artifactsDir, "wine").apply { mkdirs() }
+        val graphicsDir = File(artifactsDir, "graphics").apply { mkdirs() }
+        val dxvkDir = File(artifactsDir, "dxvk").apply { mkdirs() }
+        val vkd3dDir = File(artifactsDir, "vkd3d-proton").apply { mkdirs() }
+        val qemuDir = File(artifactsDir, "qemu").apply { mkdirs() }
+        val qemuFwDir = File(artifactsDir, "qemu-firmware").apply { mkdirs() }
         val tigerVncDir = File(artifactsDir, "tigervnc-arm64").apply { mkdirs() }
         val xfceDir = File(artifactsDir, "xfce").apply { mkdirs() }
 
@@ -29,6 +35,16 @@ object AssetInstaller {
             "box64/box64" to File(box64Dir, "box64"),
             "box64/LICENSE" to File(box64Dir, "LICENSE"),
             "box64/manifest.json" to File(box64Dir, "manifest.json"),
+            "runtime/wine/manifest.json" to File(wineDir, "manifest.json"),
+            "runtime/graphics/manifest.json" to File(graphicsDir, "manifest.json"),
+            "runtime/dxvk/manifest.json" to File(dxvkDir, "manifest.json"),
+            "runtime/vkd3d/manifest.json" to File(vkd3dDir, "manifest.json"),
+            "runtime/qemu/manifest.json" to File(qemuDir, "manifest.json"),
+            "runtime/qemu/qemu-system-aarch64" to File(qemuDir, "qemu-system-aarch64"),
+            "runtime/qemu/qemu-system-x86_64" to File(qemuDir, "qemu-system-x86_64"),
+            "runtime/qemu/qemu-img" to File(qemuDir, "qemu-img"),
+            "runtime/qemu-firmware/AAVMF_CODE.fd" to File(qemuFwDir, "AAVMF_CODE.fd"),
+            "runtime/qemu-firmware/OVMF_CODE.fd" to File(qemuFwDir, "OVMF_CODE.fd"),
             "xvnc/Xvnc" to File(tigerVncDir, "Xvnc"),
             "xvnc/libvnc.so" to File(tigerVncDir, "libvnc.so"),
             "xvnc/vncserver" to File(tigerVncDir, "vncserver"),

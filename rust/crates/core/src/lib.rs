@@ -5,6 +5,8 @@ pub mod distributions;
 pub mod environment_metrics;
 pub mod health;
 pub mod packages;
+pub mod vm_engine;
+pub mod windows_compat;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -30,8 +32,12 @@ use androidpc_box64::{
     Box64CompatibilityLayer, Box64EnvironmentConfig, Box64ExecutionOutcome, Box64ExecutionPlan,
     Box64ExecutionRecord, Box64InstallationStatus, CompatibilitySuiteReport,
 };
+use androidpc_dependency_manager::DependencyManager;
+use androidpc_graphics_backend::GraphicsManager;
+use androidpc_windows_apps::WindowsAppLibrary;
 use androidpc_wine::{
-    WineArch, WineCommandBuilder, WineConfig, WineProcessSupervisor, WineStatusInfo,
+    WineArch, WineCommandBuilder, WineConfig, WinePrefixManager, WineProcessSupervisor,
+    WineRuntimeManager, WineStatusInfo,
 };
 use androidpc_vm::{KvmCapabilities, QemuSupervisor, VmArch, VmError, VmStatusInfo};
 
@@ -99,6 +105,11 @@ pub struct EngineCore {
     pub rfb_client: RwLock<Option<androidpc_display::RfbClient>>,
     pub audio_sink: RwLock<AudioTcpSink>,
     pub wine_supervisor: Arc<WineProcessSupervisor>,
+    pub wine_runtime: WineRuntimeManager,
+    pub wine_prefixes: WinePrefixManager,
+    pub graphics: GraphicsManager,
+    pub dependency_manager: DependencyManager,
+    pub windows_apps: WindowsAppLibrary,
     pub vm_supervisor: QemuSupervisor,
     pub box64: Box64CompatibilityLayer,
     pub gpu_mode: RwLock<androidpc_display::GpuAccelerationMode>,
@@ -168,6 +179,11 @@ impl EngineCore {
             rfb_client: RwLock::new(None),
             audio_sink: RwLock::new(AudioTcpSink::default()),
             wine_supervisor: Arc::new(WineProcessSupervisor::new()),
+            wine_runtime: WineRuntimeManager::new(config.runtime_artifacts_dir.clone()),
+            wine_prefixes: WinePrefixManager::new(&config.base_data_dir),
+            graphics: GraphicsManager::new(config.runtime_artifacts_dir.clone()),
+            dependency_manager: DependencyManager::new(&config.base_data_dir),
+            windows_apps: WindowsAppLibrary::new(&config.base_data_dir),
             vm_supervisor,
             box64: Box64CompatibilityLayer::new(config.runtime_artifacts_dir.clone()),
             gpu_mode: RwLock::new(androidpc_display::GpuAccelerationMode::default()),

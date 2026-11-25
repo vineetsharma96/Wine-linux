@@ -118,6 +118,53 @@ pub fn execute_health_check(config: &EngineConfig) -> HealthReport {
         latency_ms: t4.elapsed().as_millis() as u64,
     });
 
+    // 6. Wine 11.0 WoW64 & Graphics Stack Readiness Check
+    let t5 = Instant::now();
+    let wine_bin = config.runtime_artifacts_dir.join("wine").join("bin").join("wine");
+    let turnip_icd = config
+        .runtime_artifacts_dir
+        .join("graphics")
+        .join("turnip")
+        .join("freedreno_icd.aarch64.json");
+    let dxvk_dll = config.runtime_artifacts_dir.join("dxvk").join("x64").join("d3d11.dll");
+    let wine_gfx_msg = format!(
+        "Wine {} WoW64: {} • Turnip ICD: {} • DXVK {}: {} • Software fallback available",
+        androidpc_wine::WINE_PINNED_VERSION,
+        if wine_bin.is_file() { "staged" } else { "pending" },
+        if turnip_icd.is_file() { "staged" } else { "pending" },
+        androidpc_graphics_backend::DXVK_PINNED_VERSION,
+        if dxvk_dll.is_file() { "staged" } else { "pending" }
+    );
+    subsystems.push(SubsystemHealth {
+        name: "Windows Compatibility & Graphics".to_string(),
+        level: HealthLevel::Healthy,
+        message: wine_gfx_msg,
+        latency_ms: t5.elapsed().as_millis() as u64,
+    });
+
+    // 7. QEMU Virtual Machine Engine Check
+    let t6 = Instant::now();
+    let qemu_dir = config.runtime_artifacts_dir.join("qemu");
+    let fw_dir = config.runtime_artifacts_dir.join("qemu-firmware");
+    let caps = androidpc_vm::QemuEngineCapabilities::probe(&qemu_dir, &fw_dir);
+    let qemu_msg = format!(
+        "QEMU {} (aarch64: {}, x86_64: {}, qemu-img: {}) • Accel: {} • EDK2 {}: AAVMF={}, OVMF={}",
+        caps.pinned_qemu_version,
+        if caps.qemu_aarch64_installed { "staged" } else { "pending" },
+        if caps.qemu_x86_64_installed { "staged" } else { "pending" },
+        if caps.qemu_img_installed { "staged" } else { "pending" },
+        caps.kvm.accelerator,
+        caps.pinned_edk2_version,
+        if caps.aavmf_firmware_installed { "staged" } else { "pending" },
+        if caps.ovmf_firmware_installed { "staged" } else { "pending" }
+    );
+    subsystems.push(SubsystemHealth {
+        name: "QEMU Virtual Machines".to_string(),
+        level: HealthLevel::Healthy,
+        message: qemu_msg,
+        latency_ms: t6.elapsed().as_millis() as u64,
+    });
+
     let overall_level = if subsystems.iter().any(|s| s.level == HealthLevel::Critical) {
         HealthLevel::Critical
     } else if subsystems.iter().any(|s| s.level == HealthLevel::Degraded) {

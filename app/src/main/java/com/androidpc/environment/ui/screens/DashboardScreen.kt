@@ -38,6 +38,7 @@ import com.androidpc.environment.bridge.EngineStatusData
 import com.androidpc.environment.bridge.EnvironmentConfigData
 import com.androidpc.environment.bridge.HealthReportData
 import com.androidpc.environment.bridge.WineStatusData
+import com.androidpc.environment.bridge.WindowsCompatibilityOverviewData
 import com.androidpc.environment.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -65,6 +66,8 @@ fun DashboardScreen(
     onOpenEnvironmentDetails: (String) -> Unit,
     onOpenBackups: () -> Unit,
     onOpenCompatibility: () -> Unit = {},
+    windowsOverview: WindowsCompatibilityOverviewData? = null,
+    onOpenWindowsCompatibility: (Int) -> Unit = {},
     onInitWinePrefix: () -> Unit,
     onLaunchWineApp: (String, List<String>) -> Unit,
     onKillWineSession: () -> Unit,
@@ -293,56 +296,167 @@ fun DashboardScreen(
                 }
             }
 
-            // Phase 4.1 Box64 Compatibility Banner Card
+            // Phase 4 — Complete Windows Compatibility Engine Summary Card
             item {
+                val effectiveBox64 = windowsOverview?.box64 ?: box64Status
+                val wineInfo = windowsOverview?.wine
+                val gfxInfo = windowsOverview?.graphics
+                val activeBackendReport = gfxInfo?.backends?.firstOrNull { it.kind == gfxInfo.effective_backend }
+                val gfxStage = activeBackendReport?.stage?.uppercase()?.replace('_', ' ') ?: "SOFTWARE"
+                val gfxCaps = buildList {
+                    if (activeBackendReport?.supports_opengl != false) add("OpenGL")
+                    if (activeBackendReport?.supports_vulkan == true) add("Vulkan")
+                    if (gfxInfo?.dx_translation?.dxvk_eligible == true) add("DXVK")
+                    if (gfxInfo?.dx_translation?.vkd3d_eligible == true) add("VKD3D")
+                }.joinToString(" • ").ifEmpty { "OpenGL (Software)" }
+                val runtimeErrors = windowsOverview?.runtime_errors.orEmpty()
+
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, AccentPurple.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
-                        .clickable(onClick = onOpenCompatibility)
-                        .testTag("dashboard_box64_card"),
+                        .border(1.dp, AccentPurple.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+                        .testTag("dashboard_windows_compat_card"),
                     colors = CardDefaults.cardColors(containerColor = SurfaceElevated),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Row(
-                            modifier = Modifier.weight(1f),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(AccentPurple.copy(alpha = 0.18f)),
-                                contentAlignment = Alignment.Center
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Icon(Icons.Filled.Memory, contentDescription = null, tint = AccentCyan)
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(AccentPurple.copy(alpha = 0.2f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Filled.Memory, contentDescription = null, tint = AccentCyan)
+                                }
+                                Column {
+                                    Text(
+                                        text = "Windows Compatibility Engine",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Box64 • Wine WoW64 • Turnip / VirGL / Software",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary
+                                    )
+                                }
                             }
-                            Column {
+                            StatusPill(
+                                text = if (effectiveBox64?.installed == true && wineInfo?.installed == true) "READY" else "STAGED",
+                                color = if (effectiveBox64?.installed == true && wineInfo?.installed == true) StatusGreen else AccentCyan
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            MetricItem(
+                                "Box64",
+                                if (effectiveBox64?.installed == true) "v${effectiveBox64.pinned_version} Ready" else "v${effectiveBox64?.pinned_version ?: "0.4.4"} Pending"
+                            )
+                            MetricItem(
+                                "Wine",
+                                if (wineInfo?.installed == true) "v${wineInfo.pinned_version} WoW64" else "v${wineInfo?.pinned_version ?: "11.0"} Pending"
+                            )
+                            MetricItem(
+                                "Prefixes / Apps",
+                                "${windowsOverview?.prefix_count ?: 0} / ${windowsOverview?.installed_apps_count ?: 0}"
+                            )
+                        }
+
+                        Surface(
+                            color = SurfaceDark,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "Graphics: ${(gfxInfo?.effective_backend ?: "software").uppercase()} ($gfxStage)",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = AccentCyan,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Active procs: ${windowsOverview?.active_processes_count ?: 0}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TextSecondary
+                                    )
+                                }
                                 Text(
-                                    text = "Box64 x86-64 Compatibility",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = TextPrimary,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = "ELF routing, dynarec controls, suite & history",
+                                    text = "Capabilities: $gfxCaps • DX: ${gfxInfo?.dx_translation?.effective_choice ?: "wine_d3d_open_gl"}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = TextSecondary
                                 )
+                                if (runtimeErrors.isNotEmpty()) {
+                                    Text(
+                                        text = "Runtime notices (${runtimeErrors.size}): ${runtimeErrors.first()}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = StatusAmber
+                                    )
+                                }
                             }
                         }
-                        StatusPill(
-                            text = if (box64Status?.installed == true) "READY" else "CONFIGURE",
-                            color = if (box64Status?.installed == true) StatusGreen else AccentCyan
-                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { onOpenWindowsCompatibility(0) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(42.dp)
+                                    .testTag("dashboard_open_windows_apps_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Windows Apps", color = BgDark, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                            }
+                            OutlinedButton(
+                                onClick = { onOpenWindowsCompatibility(2) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(42.dp)
+                                    .testTag("dashboard_open_graphics_button"),
+                                border = BorderStroke(1.dp, CardBorder),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Graphics", color = TextPrimary, style = MaterialTheme.typography.labelMedium)
+                            }
+                            OutlinedButton(
+                                onClick = onOpenCompatibility,
+                                modifier = Modifier
+                                    .height(42.dp)
+                                    .testTag("dashboard_box64_card"),
+                                border = BorderStroke(1.dp, CardBorder),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Box64", color = AccentCyan, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
                     }
                 }
             }

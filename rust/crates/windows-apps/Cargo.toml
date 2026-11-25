@@ -1,0 +1,15 @@
+[package]
+name = "androidpc-windows-apps"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+androidpc-configuration = { path = "../configuration" }
+androidpc-graphics-backend = { path = "../graphics-backend" }
+androidpc-security = { path = "../security" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

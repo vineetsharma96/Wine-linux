@@ -26,3 +26,27 @@ $XERJ = "C:\Users\abc\AppData\Local\Programs\xerj\xerj.exe"
 & $XERJ search "inspect_elf_bytes android bionic" --prefix androidpc
 ```
 
+## Phase 4 (4.2–4.10) Refresh (Pending Local Windows XERJ Run)
+Phase 4 added `rust/crates/graphics-backend/`, `rust/crates/dependency-manager/`, `rust/crates/windows-apps/`, extended `rust/crates/wine/`, `rust/crates/core/src/windows_compat.rs`, `rust/crates/android-bridge/src/windows_jni.rs`, `runtime/*/manifest.json`, `scripts/build_phase4_stack.sh`, `scripts/benchmark_phase4_device.sh`, Android Compose Windows Compatibility screens (`WindowsCompatibilityScreen.kt`, `WindowsAppsTab.kt`, `WineAndGraphicsTabs.kt`, `WindowsCompatibilityBridge.kt`), Phase 4 research & operational docs, and `docs/testing/PHASE_4_TEST_PLAN.md`. On the local Windows workstation with XERJ running, refresh the index and store Phase 4 architectural memory:
+
+```powershell
+$XERJ = "C:\Users\abc\AppData\Local\Programs\xerj\xerj.exe"
+& $XERJ autoindex . --prefix androidpc --code-analyzer code --workers 2
+& $XERJ def "GraphicsManager" --prefix androidpc
+& $XERJ def "WinePrefixManager" --prefix androidpc
+& $XERJ search "VKD3D_REQUIRED_VULKAN_EXTENSIONS" --prefix androidpc
+```
+
+## Phase 5 Refresh (Pending Local Windows XERJ Run)
+Phase 5 refactored `rust/crates/vm/` into 10 modular Rust files (`config.rs`, `storage.rs`, `network.rs`, `display_audio.rs`, `monitor.rs`, `snapshot.rs`, `images.rs`, `diagnostics.rs`, `qemu_engine.rs`, `error.rs`), added `rust/crates/core/src/vm_engine.rs`, `rust/crates/android-bridge/src/vm_jni.rs`, `runtime/qemu/manifest.json`, `scripts/build_qemu_arm64.sh`, `VmEngineBridge.kt`, `VirtualMachinesScreen.kt`, `VmDialogsAndTabs.kt`, Phase 5 research & operational docs, and `docs/testing/PHASE_5_TEST_PLAN.md`. On the local Windows workstation with XERJ running, refresh the index and verify symbol lookup:
+
+```powershell
+$XERJ = "C:\Users\abc\AppData\Local\Programs\xerj\xerj.exe"
+& $XERJ autoindex . --prefix androidpc --code-analyzer code --workers 2
+& $XERJ def "QemuSupervisor" --prefix androidpc
+& $XERJ def "VmStorageManager" --prefix androidpc
+& $XERJ search "write_minimal_qcow2_v3" --prefix androidpc
+```
+
+
+

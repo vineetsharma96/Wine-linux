@@ -1,0 +1,19 @@
+{
+  "component": "wine",
+  "pinned_version": "11.0",
+  "license": "LGPL-2.1-or-later",
+  "upstream_url": "https://gitlab.winehq.org/wine/wine",
+  "selected_architecture": "x86_64-linux-gnu-wow64",
+  "execution_path": "PRoot ARM64 guest -> Box64 v0.4.4 -> Wine 11.0 (pure-64-bit WoW64)",
+  "configure_flags": [
+    "--enable-archs=i386,x86_64",
+    "--disable-tests",
+    "--without-oss",
+    "--without-cups",
+    "--without-sane",
+    "--without-v4l2",
+    "--without-gphoto",
+    "--without-capi"
+  ],
+  "notes": "Wine 11.0 completes pure-64-bit WoW64 parity so both PE32+ (x86-64) and PE32 (i386) Windows applications execute without Box86 or 32-bit Linux multilib."
+}

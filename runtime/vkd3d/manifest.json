@@ -1,0 +1,19 @@
+{
+  "component": "vkd3d-proton",
+  "pinned_version": "3.1",
+  "license": "LGPL-2.1",
+  "upstream_url": "https://github.com/HansKristian-Work/vkd3d-proton/releases/tag/v3.1",
+  "translated_apis": ["Direct3D 12"],
+  "required_vulkan_version": "1.3",
+  "required_vulkan_extensions": [
+    "VK_KHR_dynamic_rendering",
+    "VK_EXT_descriptor_indexing",
+    "VK_KHR_buffer_device_address",
+    "VK_KHR_timeline_semaphore",
+    "VK_EXT_robustness2",
+    "VK_EXT_extended_dynamic_state"
+  ],
+  "staging_directory": "artifacts/vkd3d-proton/x64",
+  "dlls": ["d3d12.dll", "d3d12core.dll"],
+  "fallback_policy": "Strictly gated; never claimed operational unless all required Vulkan extensions pass live device probe."
+}

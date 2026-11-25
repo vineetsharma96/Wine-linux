@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.androidpc.environment.BuildConfig
 import com.androidpc.environment.bridge.ArtifactMetadataData
 import com.androidpc.environment.bridge.NativeBridge
 import com.androidpc.environment.ui.theme.*
@@ -41,6 +42,19 @@ fun ArtifactsScreen(
         NativeBridge.listArtifacts().onSuccess { artifacts = it }
     }
 
+    val pinnedStack = remember(artifactsDir) {
+        listOf(
+            Triple("Box64 (x86-64 Dynarec)", "v${BuildConfig.BOX64_VERSION} • MIT", File(artifactsDir, "box64/box64").isFile),
+            Triple("Wine (Pure-64 WoW64)", "v${BuildConfig.WINE_VERSION} • LGPL-2.1+", File(artifactsDir, "wine/bin/wine").isFile),
+            Triple("Mesa Turnip (Adreno Vulkan)", "v${BuildConfig.TURNIP_VERSION} • MIT", File(artifactsDir, "graphics/turnip/libvulkan_freedreno.so").isFile),
+            Triple("VirGL (virglrenderer OpenGL)", "v${BuildConfig.VIRGL_VERSION} • MIT", File(artifactsDir, "graphics/virgl/virgl_test_server_android").isFile),
+            Triple("DXVK (D3D8–11 → Vulkan)", "v${BuildConfig.DXVK_VERSION} • zlib", File(artifactsDir, "dxvk/x64/d3d11.dll").isFile),
+            Triple("VKD3D-Proton (D3D12 → Vulkan)", "v${BuildConfig.VKD3D_VERSION} • LGPL-2.1", File(artifactsDir, "vkd3d-proton/x64/d3d12.dll").isFile),
+            Triple("QEMU VM Engine (ARM64 + x86-64)", "v${BuildConfig.QEMU_VERSION} • GPL-2.0 • libslirp ${BuildConfig.LIBSLIRP_VERSION}", File(artifactsDir, "qemu/qemu-system-aarch64").isFile),
+            Triple("EDK2 UEFI Firmware (AAVMF + OVMF)", "${BuildConfig.EDK2_VERSION} • BSD-2-Clause-Patent", File(artifactsDir, "qemu-firmware/AAVMF_CODE.fd").isFile)
+        )
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -63,6 +77,43 @@ fun ArtifactsScreen(
                     color = TextPrimary,
                     fontWeight = FontWeight.Bold
                 )
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, AccentPurple.copy(alpha = 0.55f), RoundedCornerShape(12.dp)),
+                colors = CardDefaults.cardColors(containerColor = SurfaceElevated),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "PINNED RUNTIME & VIRTUALIZATION STACK",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = AccentCyan,
+                        fontWeight = FontWeight.Bold
+                    )
+                    pinnedStack.forEach { (label, versionInfo, binaryPresent) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(label, style = MaterialTheme.typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                                Text(versionInfo, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                            }
+                            Text(
+                                text = if (binaryPresent) "STAGED" else "MANIFEST PACKAGED",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (binaryPresent) StatusGreen else StatusAmber,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
             }
         }
 

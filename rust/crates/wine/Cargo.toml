@@ -11,7 +11,11 @@ androidpc-configuration = { path = "../configuration" }
 androidpc-logging = { path = "../logging" }
 androidpc-process = { path = "../process" }
 androidpc-linux-runtime = { path = "../linux-runtime" }
+androidpc-security = { path = "../security" }
+androidpc-graphics-backend = { path = "../graphics-backend" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tar.workspace = true
+flate2.workspace = true

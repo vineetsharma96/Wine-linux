@@ -8,7 +8,10 @@ license.workspace = true
 [dependencies]
 androidpc-runtime-api = { path = "../runtime-api" }
 androidpc-process = { path = "../process" }
+androidpc-security = { path = "../security" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }

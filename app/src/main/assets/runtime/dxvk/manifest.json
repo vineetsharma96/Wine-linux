@@ -1,0 +1,11 @@
+{
+  "component": "dxvk",
+  "pinned_version": "2.7.1",
+  "license": "zlib",
+  "upstream_url": "https://github.com/doitsujin/dxvk/releases/tag/v2.7.1",
+  "translated_apis": ["Direct3D 8", "Direct3D 9", "Direct3D 10", "Direct3D 11", "DXGI"],
+  "required_vulkan_version": "1.3",
+  "staging_directory": "artifacts/dxvk/x64",
+  "dlls": ["d3d8.dll", "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"],
+  "fallback_policy": "Automatically falls back to WineD3D OpenGL when Vulkan backend is not verified Operational."
+}

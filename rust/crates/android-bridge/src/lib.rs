@@ -11,10 +11,12 @@ use androidpc_runtime_api::DisplayConfig;
 use androidpc_wine::WineArch;
 
 pub mod native_display;
+pub mod vm_jni;
+pub mod windows_jni;
 
-static ENGINE_INSTANCE: RwLock<Option<EngineCore>> = RwLock::new(None);
+pub(crate) static ENGINE_INSTANCE: RwLock<Option<EngineCore>> = RwLock::new(None);
 
-fn create_jstring<'a>(env: &mut JNIEnv<'a>, value: &str) -> jstring {
+pub(crate) fn create_jstring<'a>(env: &mut JNIEnv<'a>, value: &str) -> jstring {
     env.new_string(value)
         .map(|s| s.into_raw())
         .unwrap_or(std::ptr::null_mut())

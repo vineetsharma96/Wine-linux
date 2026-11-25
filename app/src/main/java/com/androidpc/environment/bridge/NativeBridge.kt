@@ -112,6 +112,37 @@ object NativeBridge {
     private external fun nativeExecuteCompatibleBinary(envId: String, binaryPath: String, argsJson: String): String
     private external fun nativeRunBox64Suite(envId: String): String
     private external fun nativeGetBox64History(limit: Int): String
+    internal external fun nativeGetWindowsOverview(envId: String): String
+    internal external fun nativeListWinePrefixes(): String
+    internal external fun nativeCreateWinePrefix(
+        id: String,
+        displayName: String,
+        envId: String,
+        arch: String,
+        windowsVersion: String,
+        graphicsBackend: String
+    ): String
+    internal external fun nativeManageWinePrefix(action: String, prefixId: String, payloadJson: String): String
+    internal external fun nativeProbeGraphicsBackends(envId: String): String
+    internal external fun nativeConfigureGraphicsBackend(envId: String, configJson: String): String
+    internal external fun nativeListWindowsApps(): String
+    internal external fun nativeRegisterWindowsApp(profileJson: String): String
+    internal external fun nativeLaunchWindowsApp(appId: String): String
+    internal external fun nativeRemoveWindowsApp(appId: String): String
+    internal external fun nativeTerminateWindowsApp(appId: String, force: Boolean): String
+    internal external fun nativeListWindowsProcesses(): String
+    internal external fun nativeListWindowsDependencies(): String
+    internal external fun nativeDiagnosePrefixDependencies(prefixId: String, recentLogsJson: String): String
+    internal external fun nativeGetVmCapabilities(): String
+    internal external fun nativeListVmProfiles(): String
+    internal external fun nativeCreateVmProfile(requestJson: String): String
+    internal external fun nativeUpdateVmProfile(profileJson: String): String
+    internal external fun nativeVmLifecycleAction(actionJson: String): String
+    internal external fun nativeManageVmDisk(diskJson: String): String
+    internal external fun nativeManageVmSnapshots(snapshotJson: String): String
+    internal external fun nativeGetVmLogs(vmId: String): String
+    internal external fun nativeListOfficialVmImages(): String
+    internal external fun nativeQueryVmQmpStatus(qmpPort: Int): String
 
     suspend fun initEngine(context: Context): Result<Int> = withContext(Dispatchers.IO) {
         if (!isLoaded) {
