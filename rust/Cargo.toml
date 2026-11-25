@@ -37,7 +37,7 @@ thiserror = "2.0"
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-jni = { version = "0.21", default-features = false }
+jni = { version = "0.22", default-features = false }
 sha2 = "0.11.1"
 hex = "0.4"
 tar = "0.4"
