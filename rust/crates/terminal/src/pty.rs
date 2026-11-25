@@ -156,8 +156,13 @@ impl DefaultTerminalSession {
                 if let Some(ref dir) = cwd_c {
                     libc::chdir(dir.as_ptr());
                 }
+                // Clear inherited Android environment variables so internal vars
+                // (e.g. DEX2OATBOOTCLASSPATH) do not leak into the Linux guest.
+                #[cfg(target_os = "android")]
+                libc::clearenv();
+                #[cfg(target_os = "linux")]
+                libc::clearenv();
                 for kv in &env_c {
-                    // putenv takes ownership of a persistent buffer; leak is safe in child pre-exec
                     let ptr = libc::strdup(kv.as_ptr());
                     if !ptr.is_null() {
                         libc::putenv(ptr);
