@@ -47,6 +47,7 @@ data class EngineConfigData(
     val base_data_dir: String,
     val runtime_artifacts_dir: String,
     val temporary_dir: String,
+    val native_lib_dir: String? = null,
     val debug_mode: Boolean,
     val log_level: String,
     val max_concurrent_processes: Int
@@ -101,5 +102,39 @@ data class WineStatusData(
 data class ProcessCommandData(
     val program: String = "",
     val args: List<String> = emptyList(),
-    val cwd: String? = null
+    val cwd: String? = null,
+    val spawned_pid: Long? = null,
+    val error: String? = null
+)
+
+data class AudioStatusData(
+    val running: Boolean = false,
+    val listen_address: String = "127.0.0.1",
+    val port: Int = 4713,
+    val sample_rate_hz: Int = 44100,
+    val channels: Int = 2,
+    val active_clients: Long = 0L,
+    val buffered_bytes: Int = 0,
+    val total_bytes_received: Long = 0L
+)
+
+data class KvmCapabilitiesData(
+    val device_present: Boolean = false,
+    val accessible: Boolean = false,
+    val accelerator: String = "tcg",
+    val notes: String = ""
+)
+
+data class VmStatusData(
+    val id: String = "",
+    val arch: String = "aarch64",
+    val state: String = "Stopped",
+    val memory_mb: Int = 1024,
+    val cpus: Int = 2,
+    val disk_size_mb: Int = 2048,
+    val vnc_port: Int = 5910,
+    val qmp_port: Int = 4444,
+    val accelerator: String = "tcg",
+    val pid: Long? = null,
+    val disk_exists: Boolean = false
 )

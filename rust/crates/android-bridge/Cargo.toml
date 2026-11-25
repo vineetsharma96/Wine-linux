@@ -20,6 +20,7 @@ androidpc-linux-runtime = { path = "../linux-runtime" }
 androidpc-display = { path = "../display" }
 androidpc-terminal = { path = "../terminal" }
 androidpc-wine = { path = "../wine" }
+androidpc-vm = { path = "../vm" }
 androidpc-core = { path = "../core" }
 jni.workspace = true
 serde.workspace = true

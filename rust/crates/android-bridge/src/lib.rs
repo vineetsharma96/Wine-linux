@@ -171,7 +171,7 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
             None => {
                 let default_cfg = EngineConfig::default();
                 let health = androidpc_core::health::execute_health_check(&default_cfg);
-                androidpc_core::diagnostics::collect_system_diagnostics(&default_cfg, &health)
+                androidpc_core::diagnostics::collect_system_diagnostics(&default_cfg, &health, 0)
             }
         };
 
@@ -877,7 +877,7 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
 
 #[no_mangle]
 pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeGetFramebuffer(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     pixels_out: JByteArray,
 ) -> jint {
@@ -1164,6 +1164,492 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
         }
     }));
 
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeStartEnvironment(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id_str: String = match env.get_string(&env_id) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.start_environment(&id_str) {
+                Ok(_) => 0,
+                Err(e) => {
+                    androidpc_logging::push_log("ERROR", "androidpc::bridge", &format!("Start env '{id_str}' failed: {e}"));
+                    -2
+                }
+            }
+        } else {
+            -3
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeDeleteEnvironment(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id_str: String = match env.get_string(&env_id) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.delete_environment(&id_str) {
+                Ok(_) => 0,
+                Err(e) => {
+                    androidpc_logging::push_log("ERROR", "androidpc::bridge", &format!("Delete env '{id_str}' failed: {e}"));
+                    -2
+                }
+            }
+        } else {
+            -3
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeVerifyAndInstallArtifact(
+    mut env: JNIEnv,
+    _class: JClass,
+    part_path: JString,
+    dest_filename: JString,
+    expected_sha256: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let part_str: String = match env.get_string(&part_path) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let dest_str: String = match env.get_string(&dest_filename) {
+            Ok(s) => s.into(),
+            Err(_) => return -2,
+        };
+        let sha_str: String = match env.get_string(&expected_sha256) {
+            Ok(s) => s.into(),
+            Err(_) => "".to_string(),
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.verify_and_install_artifact(std::path::Path::new(&part_str), &dest_str, &sha_str) {
+                Ok(_) => 0,
+                Err(e) => {
+                    androidpc_logging::push_log("ERROR", "androidpc::bridge", &format!("Artifact install failed: {e}"));
+                    -3
+                }
+            }
+        } else {
+            -4
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeListArtifacts(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            let list = core.list_artifacts_for_host();
+            let json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string());
+            create_jstring(&mut env, &json)
+        } else {
+            create_jstring(&mut env, "[]")
+        }
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeStartAudioSink(
+    _env: JNIEnv,
+    _class: JClass,
+    port: jint,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            let p = if port <= 0 { 4713 } else { port as u16 };
+            match core.start_audio_sink(p) {
+                Ok(bound) => bound as jint,
+                Err(e) => {
+                    androidpc_logging::push_log("ERROR", "androidpc::bridge", &format!("Audio sink start failed: {e}"));
+                    -1
+                }
+            }
+        } else {
+            -2
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeStopAudioSink(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.stop_audio_sink() {
+                Ok(_) => 0,
+                Err(_) => -1,
+            }
+        } else {
+            -2
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeReadAudioPcm(
+    env: JNIEnv,
+    _class: JClass,
+    pcm_out: JByteArray,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let len = match env.get_array_length(&pcm_out) {
+            Ok(l) => l.max(0) as usize,
+            Err(_) => return -1,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            let mut buf = vec![0u8; len];
+            match core.read_audio_pcm(&mut buf) {
+                Ok(read) => {
+                    if read > 0 {
+                        let slice_i8: &[i8] = unsafe {
+                            std::slice::from_raw_parts(buf[..read].as_ptr() as *const i8, read)
+                        };
+                        if env.set_byte_array_region(&pcm_out, 0, slice_i8).is_err() {
+                            return -2;
+                        }
+                    }
+                    read as jint
+                }
+                Err(_) => -3,
+            }
+        } else {
+            -4
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeGetAudioStatus(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.get_audio_status() {
+                Ok(status) => {
+                    let json = serde_json::to_string(&status).unwrap_or_else(|_| "{}".to_string());
+                    create_jstring(&mut env, &json)
+                }
+                Err(_) => create_jstring(&mut env, "{}"),
+            }
+        } else {
+            create_jstring(&mut env, "{}")
+        }
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeLaunchWineApp(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+    exe_path: JString,
+    args_json: JString,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env_id_str: String = match env.get_string(&env_id) {
+            Ok(s) => s.into(),
+            Err(_) => return std::ptr::null_mut(),
+        };
+        let exe_str: String = match env.get_string(&exe_path) {
+            Ok(s) => s.into(),
+            Err(_) => return std::ptr::null_mut(),
+        };
+        let args_raw: String = match env.get_string(&args_json) {
+            Ok(s) => s.into(),
+            Err(_) => "[]".to_string(),
+        };
+        let args: Vec<String> = serde_json::from_str(&args_raw).unwrap_or_default();
+
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.launch_wine_app(&env_id_str, &exe_str, &args) {
+                Ok((cmd, pid)) => {
+                    let payload = serde_json::json!({
+                        "program": cmd.program,
+                        "args": cmd.args,
+                        "cwd": cmd.cwd,
+                        "spawned_pid": pid,
+                    });
+                    create_jstring(&mut env, &payload.to_string())
+                }
+                Err(e) => {
+                    androidpc_logging::push_log("ERROR", "androidpc::bridge", &format!("Launch wine app failed: {e}"));
+                    create_jstring(&mut env, &format!("{{\"error\":\"{e}\"}}"))
+                }
+            }
+        } else {
+            create_jstring(&mut env, "{\"error\":\"Engine not initialized\"}")
+        }
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeProvisionEnvironmentWithMemory(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+    distro: JString,
+    memory_mb: jint,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env_id_str: String = match env.get_string(&env_id) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let distro_str: String = match env.get_string(&distro) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            let mem = (memory_mb.max(512)) as u32;
+            match core.provision_environment_with_memory(&env_id_str, &distro_str, mem) {
+                Ok(_) => 0,
+                Err(e) => {
+                    androidpc_logging::push_log("ERROR", "androidpc::bridge", &format!("Provision failed: {e}"));
+                    -2
+                }
+            }
+        } else {
+            -3
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeProbeKvmSupport(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let caps = androidpc_vm::KvmCapabilities::probe();
+        let json = serde_json::to_string(&caps).unwrap_or_else(|_| "{}".to_string());
+        create_jstring(&mut env, &json)
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeCreateVm(
+    mut env: JNIEnv,
+    _class: JClass,
+    vm_id: JString,
+    arch: JString,
+    memory_mb: jint,
+    cpus: jint,
+    disk_size_mb: jint,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id_str: String = match env.get_string(&vm_id) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let arch_str: String = match env.get_string(&arch) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let vm_arch = match androidpc_vm::VmArch::parse(&arch_str) {
+            Ok(a) => a,
+            Err(_) => return -2,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.create_vm(
+                &id_str,
+                vm_arch,
+                memory_mb.max(256) as u32,
+                cpus.clamp(1, 16) as u8,
+                disk_size_mb.max(256) as u32,
+            ) {
+                Ok(_) => 0,
+                Err(e) => {
+                    androidpc_logging::push_log("ERROR", "androidpc::bridge", &format!("Create VM failed: {e}"));
+                    -3
+                }
+            }
+        } else {
+            -4
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeStartVm(
+    mut env: JNIEnv,
+    _class: JClass,
+    vm_id: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id_str: String = match env.get_string(&vm_id) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.start_vm(&id_str) {
+                Ok(_) => 0,
+                Err(e) => {
+                    androidpc_logging::push_log("ERROR", "androidpc::bridge", &format!("Start VM '{id_str}' failed: {e}"));
+                    -2
+                }
+            }
+        } else {
+            -3
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeStopVm(
+    mut env: JNIEnv,
+    _class: JClass,
+    vm_id: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id_str: String = match env.get_string(&vm_id) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.stop_vm(&id_str) {
+                Ok(_) => 0,
+                Err(_) => -2,
+            }
+        } else {
+            -3
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeDeleteVm(
+    mut env: JNIEnv,
+    _class: JClass,
+    vm_id: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let id_str: String = match env.get_string(&vm_id) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.delete_vm(&id_str) {
+                Ok(_) => 0,
+                Err(_) => -2,
+            }
+        } else {
+            -3
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeListVms(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            let vms = core.list_vms();
+            let json = serde_json::to_string(&vms).unwrap_or_else(|_| "[]".to_string());
+            create_jstring(&mut env, &json)
+        } else {
+            create_jstring(&mut env, "[]")
+        }
+    }));
     result.unwrap_or(std::ptr::null_mut())
 }
 

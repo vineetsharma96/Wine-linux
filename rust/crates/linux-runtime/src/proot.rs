@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 use androidpc_configuration::EnvironmentConfig;
-use androidpc_runtime_api::{Architecture, HealthLevel, HealthReport, RuntimeError, RuntimeProvider, SubsystemHealth};
+use androidpc_runtime_api::{
+    Architecture, HealthLevel, HealthReport, RuntimeError, RuntimeProvider, SubsystemHealth,
+};
 
 pub struct ProotRuntimeProvider {
     proot_binary_path: PathBuf,
@@ -19,6 +21,18 @@ impl ProotRuntimeProvider {
         &self.proot_binary_path
     }
 
+    /// Resolves the architecture-specific PRoot binary name.
+    pub fn binary_name_for_arch(arch: Architecture) -> &'static str {
+        match arch {
+            Architecture::Aarch64 => "proot-arm64",
+            Architecture::X86_64 => "proot-x86_64",
+            Architecture::Armv7 => "proot-armv7",
+            Architecture::I686 => "proot-i686",
+            Architecture::Riscv64 => "proot-riscv64",
+        }
+    }
+
+    /// Builds hardened PRoot CLI arguments for rootless Android execution.
     pub fn build_proot_command(
         &self,
         config: &EnvironmentConfig,
@@ -26,14 +40,18 @@ impl ProotRuntimeProvider {
     ) -> Vec<String> {
         let mut args = Vec::new();
 
-        // 1. Rootfs root directory
+        // 1. Kill all traced children when PRoot exits and emulate hardlinks on Android FUSE/sdcardfs
+        args.push("--kill-on-exit".to_string());
+        args.push("--link2symlink".to_string());
+
+        // 2. Rootfs root directory
         args.push("-r".to_string());
         args.push(config.rootfs_directory.display().to_string());
 
-        // 2. Fake root privileges inside guest
+        // 3. Fake root privileges inside guest
         args.push("-0".to_string());
 
-        // 3. Mount standard Linux pseudo-filesystems
+        // 4. Mount standard Linux pseudo-filesystems & Android-safe /dev/shm emulation
         args.push("-b".to_string());
         args.push("/dev".to_string());
         args.push("-b".to_string());
@@ -41,17 +59,21 @@ impl ProotRuntimeProvider {
         args.push("-b".to_string());
         args.push("/sys".to_string());
 
-        // 4. Custom bind mounts
+        let guest_shm = config.rootfs_directory.join("dev").join("shm");
+        args.push("-b".to_string());
+        args.push(format!("{}:/dev/shm", guest_shm.display()));
+
+        // 5. Custom bind mounts
         for (host, guest) in &config.custom_mounts {
             args.push("-b".to_string());
             args.push(format!("{}:{}", host.display(), guest.display()));
         }
 
-        // 5. Working directory
+        // 6. Working directory
         args.push("-w".to_string());
         args.push(format!("/home/{}", config.default_username));
 
-        // 6. Target command or default shell
+        // 7. Target command or default shell
         if command_to_run.is_empty() {
             args.push("/bin/bash".to_string());
             args.push("-l".to_string());
@@ -77,7 +99,10 @@ impl RuntimeProvider for ProotRuntimeProvider {
     }
 
     fn is_supported(&self, arch: Architecture) -> bool {
-        matches!(arch, Architecture::Aarch64 | Architecture::X86_64)
+        matches!(
+            arch,
+            Architecture::Aarch64 | Architecture::X86_64 | Architecture::Armv7
+        )
     }
 
     fn health_check(&self) -> Result<HealthReport, RuntimeError> {
@@ -91,7 +116,10 @@ impl RuntimeProvider for ProotRuntimeProvider {
         let msg = if exists {
             format!("PRoot binary verified at {:?}", self.proot_binary_path)
         } else {
-            format!("PRoot binary pending download at {:?}", self.proot_binary_path)
+            format!(
+                "PRoot binary pending download at {:?}",
+                self.proot_binary_path
+            )
         };
 
         Ok(HealthReport {
@@ -113,5 +141,35 @@ impl RuntimeProvider for ProotRuntimeProvider {
         // On modern Android (Linux 6.1 GKI), unprivileged processes can ptrace their own spawned children
         info!("Verifying rootless ptrace capability in Android sandbox");
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_proot_command_hardening_flags() {
+        let provider = ProotRuntimeProvider::new("/data/local/proot-arm64");
+        let cfg = EnvironmentConfig::new_default("ubuntu-dev", "ubuntu", Path::new("/data/local"));
+        let cmd = provider.build_proot_command(&cfg, &["/bin/uname".to_string(), "-a".to_string()]);
+
+        assert!(cmd.contains(&"--kill-on-exit".to_string()));
+        assert!(cmd.contains(&"--link2symlink".to_string()));
+        assert!(cmd.contains(&"-0".to_string()));
+        assert!(cmd.iter().any(|a| a.ends_with(":/dev/shm")));
+        assert!(cmd.ends_with(&["/bin/uname".to_string(), "-a".to_string()]));
+    }
+
+    #[test]
+    fn test_multi_arch_support() {
+        let provider = ProotRuntimeProvider::new("/tmp/proot");
+        assert!(provider.is_supported(Architecture::Aarch64));
+        assert!(provider.is_supported(Architecture::X86_64));
+        assert!(provider.is_supported(Architecture::Armv7));
+        assert_eq!(
+            ProotRuntimeProvider::binary_name_for_arch(Architecture::X86_64),
+            "proot-x86_64"
+        );
     }
 }

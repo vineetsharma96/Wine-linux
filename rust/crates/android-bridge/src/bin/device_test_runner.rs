@@ -25,6 +25,7 @@ fn main() {
     println!("Target OS:         {}", std::env::consts::OS);
 
     // 1. Core Engine Lifecycle
+    #[allow(unused_mut)]
     let mut config = EngineConfig::default();
     #[cfg(target_os = "android")]
     {
@@ -267,7 +268,31 @@ fn main() {
     assert_eq!(mapped_unix, Some(prefix_p.join("drive_c/windows/notepad.exe")));
     println!("      Windows/Unix path bidirection translation verified (C:\\ <-> drive_c).");
 
+    // 12. Audio TCP Sink & Loopback PCM Transport
+    println!("[12/13] Testing Audio TCP sink loopback transport...");
+    let audio_port = core.start_audio_sink(0).expect("Start audio sink");
+    assert!(audio_port > 0);
+    {
+        use std::io::Write;
+        let mut sock = std::net::TcpStream::connect(("127.0.0.1", audio_port)).expect("Connect audio sink");
+        sock.write_all(&[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]).unwrap();
+        sock.flush().unwrap();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    let mut pcm = [0u8; 16];
+    let pcm_read = core.read_audio_pcm(&mut pcm).expect("Read audio pcm");
+    assert_eq!(pcm_read, 8);
+    core.stop_audio_sink().expect("Stop audio sink");
+    println!("      Audio TCP sink bound on port {} and delivered {} PCM bytes.", audio_port, pcm_read);
+
+    // 13. Hardened PRoot Flags & Persistence Check
+    println!("[13/13] Testing PRoot hardening flags & environment persistence...");
+    assert!(proot_cmd.contains(&"--kill-on-exit".to_string()));
+    assert!(proot_cmd.contains(&"--link2symlink".to_string()));
+    assert!(proot_cmd.iter().any(|a| a.ends_with(":/dev/shm")));
+    println!("      PRoot hardening flags (--kill-on-exit, --link2symlink, /dev/shm) verified.");
+
     println!("============================================================");
-    println!(" ALL PHASE 1, 2, 3, 4 & 5 HARDWARE TESTS PASSED: 100% OPERATIONAL");
+    println!(" ALL PHASE 1-6 HARDWARE TESTS PASSED: 100% OPERATIONAL");
     println!("============================================================");
 }

@@ -44,16 +44,49 @@ pub fn execute_health_check(config: &EngineConfig) -> HealthReport {
     };
     subsystems.push(proc_health);
 
-    // 4. Rootless Sandbox Check (ptrace / seccomp / PRoot readiness)
+    // 4. Rootless Sandbox & Runtime Artifacts Check
     let t3 = Instant::now();
+    let proot_bin_name = androidpc_linux_runtime::ProotRuntimeProvider::binary_name_for_arch(
+        androidpc_runtime_api::Architecture::host(),
+    );
+    let proot_exists = config.runtime_artifacts_dir.join(proot_bin_name).is_file();
+    let xvnc_exists = config
+        .runtime_artifacts_dir
+        .join("tigervnc-arm64")
+        .join("Xvnc")
+        .is_file();
+
     #[cfg(target_os = "android")]
-    let sandbox_msg = "Rootless execution container: Android seccomp and app-private directory enforced".to_string();
+    let (sandbox_level, sandbox_msg) = if proot_exists {
+        (
+            HealthLevel::Healthy,
+            format!(
+                "Rootless ptrace ready ({}; Xvnc: {})",
+                proot_bin_name,
+                if xvnc_exists { "installed" } else { "pending" }
+            ),
+        )
+    } else {
+        (
+            HealthLevel::Degraded,
+            format!(
+                "App sandbox isolated; {} pending artifact install",
+                proot_bin_name
+            ),
+        )
+    };
     #[cfg(not(target_os = "android"))]
-    let sandbox_msg = "Rootless execution container: Host test mode active".to_string();
+    let (sandbox_level, sandbox_msg) = (
+        HealthLevel::Healthy,
+        format!(
+            "Rootless execution container: Host test mode active (proot={}, xvnc={})",
+            proot_exists, xvnc_exists
+        ),
+    );
 
     subsystems.push(SubsystemHealth {
         name: "Rootless Isolation".to_string(),
-        level: HealthLevel::Healthy,
+        level: sandbox_level,
         message: sandbox_msg,
         latency_ms: t3.elapsed().as_millis() as u64,
     });

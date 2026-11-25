@@ -59,6 +59,24 @@ object NativeBridge {
     private external fun nativeBuildWineCommand(envId: String, exePath: String, argsJson: String): String
     private external fun nativeKillWineSession(envId: String): Int
     private external fun nativeGetWineStatus(envId: String): String
+    private external fun nativeStartEnvironment(envId: String): Int
+    private external fun nativeDeleteEnvironment(envId: String): Int
+    private external fun nativeVerifyAndInstallArtifact(partPath: String, destFilename: String, expectedSha256: String): Int
+    private external fun nativeListArtifacts(): String
+    private external fun nativeStartAudioSink(port: Int): Int
+    private external fun nativeStopAudioSink(): Int
+    private external fun nativeReadAudioPcm(pcmOut: ByteArray): Int
+    private external fun nativeGetAudioStatus(): String
+    private external fun nativeLaunchWineApp(envId: String, exePath: String, argsJson: String): String
+    private external fun nativeVerifyArtifact(path: String, expectedSha256: String): Boolean
+    private external fun nativeExtractRootfs(archivePath: String, targetDir: String): Long
+    private external fun nativeProvisionEnvironmentWithMemory(envId: String, distro: String, memoryMb: Int): Int
+    private external fun nativeProbeKvmSupport(): String
+    private external fun nativeCreateVm(vmId: String, arch: String, memoryMb: Int, cpus: Int, diskSizeMb: Int): Int
+    private external fun nativeStartVm(vmId: String): Int
+    private external fun nativeStopVm(vmId: String): Int
+    private external fun nativeDeleteVm(vmId: String): Int
+    private external fun nativeListVms(): String
 
     suspend fun initEngine(context: Context): Result<Int> = withContext(Dispatchers.IO) {
         if (!isLoaded) {
@@ -67,13 +85,14 @@ object NativeBridge {
 
         try {
             val baseData = context.filesDir.absolutePath
-            val artifacts = File(baseData, "artifacts").apply { mkdirs() }.absolutePath
+            val artifacts = AssetInstaller.installBundledAssets(context).absolutePath
             val tmp = File(context.cacheDir, "tmp").apply { mkdirs() }.absolutePath
 
             val config = EngineConfigData(
                 base_data_dir = baseData,
                 runtime_artifacts_dir = artifacts,
                 temporary_dir = tmp,
+                native_lib_dir = context.applicationInfo.nativeLibraryDir,
                 debug_mode = true,
                 log_level = "info",
                 max_concurrent_processes = 32
@@ -437,6 +456,198 @@ object NativeBridge {
         try {
             val raw = nativeGetWineStatus(envId)
             val parsed = gson.fromJson(raw, WineStatusData::class.java)
+            Result.success(parsed)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun startEnvironment(envId: String): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeStartEnvironment(envId)
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Start environment failed ($code)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteEnvironment(envId: String): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeDeleteEnvironment(envId)
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Delete environment failed ($code)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun listArtifacts(): Result<List<ArtifactMetadataData>> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.success(emptyList())
+        try {
+            val raw = nativeListArtifacts()
+            val listType = object : TypeToken<List<ArtifactMetadataData>>() {}.type
+            val parsed: List<ArtifactMetadataData> = gson.fromJson(raw, listType)
+            Result.success(parsed)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun verifyAndInstallArtifact(partPath: String, destFilename: String, expectedSha256: String): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeVerifyAndInstallArtifact(partPath, destFilename, expectedSha256)
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Install artifact failed ($code)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun extractRootfs(archivePath: String, targetDir: String): Result<Long> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val count = nativeExtractRootfs(archivePath, targetDir)
+            if (count >= 0) Result.success(count) else Result.failure(RuntimeException("Extract rootfs failed ($count)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun launchWineApp(
+        envId: String,
+        exePath: String,
+        args: List<String> = emptyList()
+    ): Result<ProcessCommandData> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val argsJson = gson.toJson(args)
+            val raw = nativeLaunchWineApp(envId, exePath, argsJson)
+            val parsed = gson.fromJson(raw, ProcessCommandData::class.java)
+            if (parsed.error != null) {
+                Result.failure(RuntimeException(parsed.error))
+            } else {
+                Result.success(parsed)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun startAudioSink(port: Int = 4713): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val bound = nativeStartAudioSink(port)
+            if (bound > 0) Result.success(bound) else Result.failure(RuntimeException("Start audio sink failed ($bound)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun stopAudioSink(): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeStopAudioSink()
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Stop audio sink failed ($code)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun readAudioPcm(pcmOut: ByteArray): Int {
+        if (!isLoaded) return 0
+        return try {
+            nativeReadAudioPcm(pcmOut)
+        } catch (e: Exception) {
+            0
+        }
+    }
+
+    suspend fun getAudioStatus(): Result<AudioStatusData> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val raw = nativeGetAudioStatus()
+            Result.success(gson.fromJson(raw, AudioStatusData::class.java))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun provisionEnvironmentWithMemory(envId: String, distro: String, memoryMb: Int): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeProvisionEnvironmentWithMemory(envId, distro, memoryMb)
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Provision failed ($code)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun verifyArtifact(path: String, expectedSha256: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            Result.success(nativeVerifyArtifact(path, expectedSha256))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun probeKvmSupport(): Result<KvmCapabilitiesData> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val raw = nativeProbeKvmSupport()
+            Result.success(gson.fromJson(raw, KvmCapabilitiesData::class.java))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun createVm(vmId: String, arch: String, memoryMb: Int, cpus: Int, diskSizeMb: Int): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeCreateVm(vmId, arch, memoryMb, cpus, diskSizeMb)
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Create VM failed ($code)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun startVm(vmId: String): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeStartVm(vmId)
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Start VM failed ($code) — ensure QEMU binary is installed"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun stopVm(vmId: String): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeStopVm(vmId)
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Stop VM failed ($code)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteVm(vmId: String): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeDeleteVm(vmId)
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Delete VM failed ($code)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun listVms(): Result<List<VmStatusData>> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val raw = nativeListVms()
+            val listType = object : TypeToken<List<VmStatusData>>() {}.type
+            val parsed: List<VmStatusData> = gson.fromJson(raw, listType)
             Result.success(parsed)
         } catch (e: Exception) {
             Result.failure(e)

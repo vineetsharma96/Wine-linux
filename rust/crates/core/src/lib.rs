@@ -10,20 +10,22 @@ use std::time::Instant;
 use thiserror::Error;
 use tracing::info;
 
+use androidpc_audio::{AudioError, AudioStatusInfo, AudioTcpSink};
 use androidpc_configuration::{EngineConfig, EnvironmentConfig};
 use androidpc_display::XvncDisplayBackend;
-use androidpc_downloader::DefaultArtifactProvider;
+use androidpc_downloader::{ArtifactMetadata, DefaultArtifactProvider, DownloadManager};
 use androidpc_filesystem::{ArchiveExtractor, StorageManager};
 use androidpc_linux_runtime::{ProotEnvironmentManager, ProotRuntimeProvider};
 use androidpc_runtime_api::{
     Architecture, ArtifactProvider, DisplayBackend, DisplayConfig, DisplayEndpoint,
     EngineStatusInfo, EnvironmentManager, EnvironmentState, HealthReport, LinuxDistribution,
-    ProcessId, RuntimeProvider, SystemDiagnostics, TerminalSession,
+    ProcessCommand, ProcessId, RuntimeProvider, SystemDiagnostics, TerminalSession,
 };
 use androidpc_terminal::DefaultTerminalSession;
 use androidpc_wine::{
-    WineArch, WineCommandBuilder, WineConfig, WineProcessSupervisor, WineSessionState, WineStatusInfo,
+    WineArch, WineCommandBuilder, WineConfig, WineProcessSupervisor, WineStatusInfo,
 };
+use androidpc_vm::{KvmCapabilities, QemuSupervisor, VmArch, VmError, VmStatusInfo};
 
 pub const ENGINE_VERSION: &str = "0.1.0-alpha.0";
 pub const ENGINE_NAME: &str = "Android PC Environment Engine";
@@ -45,6 +47,9 @@ pub enum CoreError {
     #[error("Runtime error: {0}")]
     Runtime(#[from] androidpc_runtime_api::RuntimeError),
 
+    #[error("Audio error: {0}")]
+    Audio(#[from] AudioError),
+
     #[error("Engine already initialized")]
     AlreadyInitialized,
 
@@ -56,6 +61,9 @@ pub enum CoreError {
 
     #[error("Wine error: {0}")]
     Wine(#[from] androidpc_wine::WineError),
+
+    #[error("VM error: {0}")]
+    Vm(#[from] VmError),
 
     #[error("Serialization failure: {0}")]
     Serialization(#[from] serde_json::Error),
@@ -73,7 +81,9 @@ pub struct EngineCore {
     pub terminal_sessions: RwLock<HashMap<String, DefaultTerminalSession>>,
     pub environments: RwLock<HashMap<String, ProotEnvironmentManager>>,
     pub rfb_client: RwLock<Option<androidpc_display::RfbClient>>,
+    pub audio_sink: RwLock<AudioTcpSink>,
     pub wine_supervisor: Arc<WineProcessSupervisor>,
+    pub vm_supervisor: QemuSupervisor,
 }
 
 impl EngineCore {
@@ -88,8 +98,13 @@ impl EngineCore {
             .unwrap_or(0);
 
         let storage = StorageManager::new(&config.base_data_dir);
-        let proot_bin = config.runtime_artifacts_dir.join("proot-arm64");
+        let proot_name = ProotRuntimeProvider::binary_name_for_arch(Architecture::host());
+        let proot_bin = config.runtime_artifacts_dir.join(proot_name);
         let proot_provider = Box::new(ProotRuntimeProvider::new(proot_bin));
+        let vm_supervisor = QemuSupervisor::new(
+            &config.base_data_dir,
+            &config.runtime_artifacts_dir.join("qemu"),
+        );
 
         let mut core = Self {
             config,
@@ -103,11 +118,14 @@ impl EngineCore {
             terminal_sessions: RwLock::new(HashMap::new()),
             environments: RwLock::new(HashMap::new()),
             rfb_client: RwLock::new(None),
+            audio_sink: RwLock::new(AudioTcpSink::default()),
             wine_supervisor: Arc::new(WineProcessSupervisor::new()),
+            vm_supervisor,
         };
 
         core.register_default_distributions();
-        info!("Engine initialization complete. Phase 1, 2, 3 & 4 Rootless Runtime, Display, Environment & Graphics Engine online.");
+        core.reload_persisted_environments();
+        info!("Engine initialization complete. Rootless Runtime, Display, Audio, Environment & Wine Engine online.");
         androidpc_logging::push_log(
             "INFO",
             "androidpc::core",
@@ -123,6 +141,36 @@ impl EngineCore {
 
     pub fn config(&self) -> &EngineConfig {
         &self.config
+    }
+
+    fn resolve_proot_provider(&self) -> Arc<ProotRuntimeProvider> {
+        if let Some(ref native_dir) = self.config.native_lib_dir {
+            let native_proot = native_dir.join("libproot.so");
+            if native_proot.is_file() {
+                return Arc::new(ProotRuntimeProvider::new(native_proot));
+            }
+        }
+        let proot_name = ProotRuntimeProvider::binary_name_for_arch(Architecture::host());
+        let proot_bin = self.config.runtime_artifacts_dir.join(proot_name);
+        Arc::new(ProotRuntimeProvider::new(proot_bin))
+    }
+
+    fn reload_persisted_environments(&self) {
+        let jsons = self.storage.list_saved_config_jsons();
+        if jsons.is_empty() {
+            return;
+        }
+        let provider = self.resolve_proot_provider();
+        if let Ok(mut guard) = self.environments.write() {
+            for raw in jsons {
+                if let Ok(env_cfg) = serde_json::from_str::<EnvironmentConfig>(&raw) {
+                    let id = env_cfg.id.clone();
+                    let mgr = ProotEnvironmentManager::from_existing(env_cfg, provider.clone())
+                        .with_artifacts_dir(&self.config.runtime_artifacts_dir);
+                    guard.insert(id, mgr);
+                }
+            }
+        }
     }
 
     pub fn status(&self) -> EngineStatusInfo {
@@ -143,7 +191,13 @@ impl EngineCore {
     }
 
     pub fn collect_diagnostics(&self) -> SystemDiagnostics {
-        diagnostics::collect_system_diagnostics(&self.config, &self.run_health_check())
+        let active_procs = self
+            .environments
+            .read()
+            .map(|envs| envs.values().filter(|m| m.is_running()).count())
+            .unwrap_or(0)
+            + usize::from(self.is_display_running());
+        diagnostics::collect_system_diagnostics(&self.config, &self.run_health_check(), active_procs)
     }
 
     pub fn create_environment_config(&self, id: &str, distro: &str) -> EnvironmentConfig {
@@ -154,8 +208,26 @@ impl EngineCore {
         Ok(self.artifacts.verify_artifact(path, expected_sha256)?)
     }
 
+    pub fn verify_and_install_artifact(
+        &self,
+        part_path: &Path,
+        dest_filename: &str,
+        expected_sha256: &str,
+    ) -> Result<std::path::PathBuf, CoreError> {
+        let dest = self.config.runtime_artifacts_dir.join(dest_filename);
+        let final_path = DownloadManager::verify_and_commit_part(part_path, &dest, expected_sha256)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&final_path, std::fs::Permissions::from_mode(0o755));
+        }
+        Ok(final_path)
+    }
+
     pub fn extract_rootfs(&self, archive: &Path, dest: &Path) -> Result<u64, CoreError> {
-        let entries = if archive.to_string_lossy().ends_with(".gz") {
+        let entries = if archive.to_string_lossy().ends_with(".gz")
+            || archive.to_string_lossy().ends_with(".tgz")
+        {
             ArchiveExtractor::extract_tar_gz(archive, dest)?
         } else {
             ArchiveExtractor::extract_tar(archive, dest)?
@@ -177,18 +249,28 @@ impl EngineCore {
         }
     }
 
+    pub fn list_artifacts_for_host(&self) -> Vec<ArtifactMetadata> {
+        self.artifacts.list_for_architecture(Architecture::host())
+    }
+
     pub fn start_display_server(&self, config: &DisplayConfig) -> Result<DisplayEndpoint, CoreError> {
         let xvnc_bin = self.config.runtime_artifacts_dir.join("tigervnc-arm64").join("Xvnc");
         let mut backend = XvncDisplayBackend::new(xvnc_bin);
         let endpoint = backend.start(config).map_err(CoreError::Runtime)?;
-        let mut guard = self.display_backend.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .display_backend
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         *guard = Some(backend);
         info!("Display server registered in core on port {}", endpoint.port);
         Ok(endpoint)
     }
 
     pub fn stop_display_server(&self) -> Result<(), CoreError> {
-        let mut guard = self.display_backend.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .display_backend
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(mut backend) = guard.take() {
             backend.stop().map_err(CoreError::Runtime)?;
         }
@@ -205,40 +287,61 @@ impl EngineCore {
     pub fn create_terminal_session(&self, id: &str, cols: u16, rows: u16) -> Result<i32, CoreError> {
         let session = DefaultTerminalSession::new(id, cols, rows).map_err(CoreError::Runtime)?;
         let fd = session.master_fd();
-        let mut guard = self.terminal_sessions.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .terminal_sessions
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         guard.insert(id.to_string(), session);
         Ok(fd)
     }
 
     pub fn write_terminal(&self, id: &str, data: &[u8]) -> Result<usize, CoreError> {
-        let mut guard = self.terminal_sessions.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .terminal_sessions
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(session) = guard.get_mut(id) {
             session.write_input(data).map_err(CoreError::Runtime)
         } else {
-            Err(CoreError::Runtime(androidpc_runtime_api::RuntimeError::TerminalError(format!("Session not found: {id}"))))
+            Err(CoreError::Runtime(
+                androidpc_runtime_api::RuntimeError::TerminalError(format!("Session not found: {id}")),
+            ))
         }
     }
 
     pub fn read_terminal(&self, id: &str, buf: &mut [u8]) -> Result<usize, CoreError> {
-        let mut guard = self.terminal_sessions.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .terminal_sessions
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(session) = guard.get_mut(id) {
             session.read_output(buf).map_err(CoreError::Runtime)
         } else {
-            Err(CoreError::Runtime(androidpc_runtime_api::RuntimeError::TerminalError(format!("Session not found: {id}"))))
+            Err(CoreError::Runtime(
+                androidpc_runtime_api::RuntimeError::TerminalError(format!("Session not found: {id}")),
+            ))
         }
     }
 
     pub fn resize_terminal(&self, id: &str, cols: u16, rows: u16) -> Result<(), CoreError> {
-        let mut guard = self.terminal_sessions.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .terminal_sessions
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(session) = guard.get_mut(id) {
             session.resize(cols, rows).map_err(CoreError::Runtime)
         } else {
-            Err(CoreError::Runtime(androidpc_runtime_api::RuntimeError::TerminalError(format!("Session not found: {id}"))))
+            Err(CoreError::Runtime(
+                androidpc_runtime_api::RuntimeError::TerminalError(format!("Session not found: {id}")),
+            ))
         }
     }
 
     pub fn close_terminal(&self, id: &str) -> Result<(), CoreError> {
-        let mut guard = self.terminal_sessions.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .terminal_sessions
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(mut session) = guard.remove(id) {
             session.close().map_err(CoreError::Runtime)?;
         }
@@ -246,37 +349,85 @@ impl EngineCore {
     }
 
     pub fn provision_environment(&self, id: &str, distro: &str) -> Result<EnvironmentConfig, CoreError> {
-        let env_config = self.create_environment_config(id, distro);
+        self.provision_environment_with_memory(id, distro, 2048)
+    }
+
+    pub fn provision_environment_with_memory(
+        &self,
+        id: &str,
+        distro: &str,
+        memory_limit_mb: u32,
+    ) -> Result<EnvironmentConfig, CoreError> {
+        let mut env_config = self.create_environment_config(id, distro);
+        env_config.memory_limit_mb = memory_limit_mb;
         env_config.validate()?;
 
         self.storage.ensure_environment_directories(id)?;
+        let cfg_json = serde_json::to_string_pretty(&env_config)?;
+        self.storage.save_environment_config(id, &cfg_json)?;
 
-        let proot_bin = self.config.runtime_artifacts_dir.join("proot-arm64");
-        let provider = Arc::new(ProotRuntimeProvider::new(proot_bin));
-
-        let mut manager = ProotEnvironmentManager::new(env_config.clone(), provider);
+        let provider = self.resolve_proot_provider();
+        let mut manager = ProotEnvironmentManager::new(env_config.clone(), provider)
+            .with_artifacts_dir(&self.config.runtime_artifacts_dir);
         manager.initialize().map_err(CoreError::Runtime)?;
 
-        let mut guard = self.environments.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .environments
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         guard.insert(id.to_string(), manager);
         info!("Environment '{id}' provisioned successfully ({distro})");
         Ok(env_config)
     }
 
+    pub fn start_environment(&self, id: &str) -> Result<(), CoreError> {
+        let mut guard = self
+            .environments
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        if let Some(manager) = guard.get_mut(id) {
+            manager.start().map_err(CoreError::Runtime)
+        } else {
+            Err(CoreError::Runtime(
+                androidpc_runtime_api::RuntimeError::Internal(format!("Environment not found: {id}")),
+            ))
+        }
+    }
+
     pub fn execute_environment_command(&self, id: &str, cmd: &[String]) -> Result<ProcessId, CoreError> {
-        let mut guard = self.environments.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .environments
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(manager) = guard.get_mut(id) {
             manager.execute_guest_command(cmd).map_err(CoreError::Runtime)
         } else {
-            Err(CoreError::Runtime(androidpc_runtime_api::RuntimeError::Internal(format!("Environment not found: {id}"))))
+            Err(CoreError::Runtime(
+                androidpc_runtime_api::RuntimeError::Internal(format!("Environment not found: {id}")),
+            ))
         }
     }
 
     pub fn stop_environment(&self, id: &str) -> Result<(), CoreError> {
-        let mut guard = self.environments.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
-        if let Some(mut manager) = guard.remove(id) {
+        let mut guard = self
+            .environments
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        if let Some(manager) = guard.get_mut(id) {
             manager.stop().map_err(CoreError::Runtime)?;
         }
+        Ok(())
+    }
+
+    pub fn delete_environment(&self, id: &str) -> Result<(), CoreError> {
+        let mut guard = self
+            .environments
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        if let Some(mut manager) = guard.remove(id) {
+            let _ = manager.stop();
+        }
+        self.storage.remove_environment(id)?;
         Ok(())
     }
 
@@ -294,8 +445,10 @@ impl EngineCore {
         }
     }
 
-    pub fn get_artifact_metadata(&self, distro: &str) -> Option<androidpc_downloader::ArtifactMetadata> {
-        self.artifacts.find_by_distribution(distro, Architecture::host()).cloned()
+    pub fn get_artifact_metadata(&self, distro: &str) -> Option<ArtifactMetadata> {
+        self.artifacts
+            .find_by_distribution(distro, Architecture::host())
+            .cloned()
     }
 
     pub fn connect_display_client(&self, address: &str, port: u16) -> Result<(u16, u16), CoreError> {
@@ -312,44 +465,105 @@ impl EngineCore {
         };
 
         let dims = (client.width, client.height);
-        let mut guard = self.rfb_client.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .rfb_client
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         *guard = Some(client);
         Ok(dims)
     }
 
     pub fn get_framebuffer_slice(&self, out: &mut [u8]) -> Result<usize, CoreError> {
-        let guard = self.rfb_client.read().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
-        if let Some(client) = guard.as_ref() {
+        let mut guard = self
+            .rfb_client
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        if let Some(client) = guard.as_mut() {
+            if client.is_connected {
+                let _ = client.poll_updates();
+                let _ = client.request_frame(true);
+            }
             let len = out.len().min(client.framebuffer.len());
             out[..len].copy_from_slice(&client.framebuffer[..len]);
             Ok(len)
         } else {
-            Err(CoreError::Runtime(androidpc_runtime_api::RuntimeError::Internal("RFB client not connected".into())))
+            Err(CoreError::Runtime(
+                androidpc_runtime_api::RuntimeError::Internal("RFB client not connected".into()),
+            ))
         }
     }
 
     pub fn send_display_pointer(&self, button_mask: u8, x: u16, y: u16) -> Result<(), CoreError> {
-        let mut guard = self.rfb_client.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .rfb_client
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(client) = guard.as_mut() {
-            client.send_pointer(button_mask, x, y).map_err(|e| CoreError::Runtime(androidpc_runtime_api::RuntimeError::Internal(e.to_string())))?;
+            client
+                .send_pointer(button_mask, x, y)
+                .map_err(|e| CoreError::Runtime(androidpc_runtime_api::RuntimeError::Internal(e.to_string())))?;
         }
         Ok(())
     }
 
     pub fn send_display_key(&self, down_flag: u8, key: u32) -> Result<(), CoreError> {
-        let mut guard = self.rfb_client.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .rfb_client
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(client) = guard.as_mut() {
-            client.send_key(down_flag, key).map_err(|e| CoreError::Runtime(androidpc_runtime_api::RuntimeError::Internal(e.to_string())))?;
+            client
+                .send_key(down_flag, key)
+                .map_err(|e| CoreError::Runtime(androidpc_runtime_api::RuntimeError::Internal(e.to_string())))?;
         }
         Ok(())
     }
 
     pub fn disconnect_display_client(&self) -> Result<(), CoreError> {
-        let mut guard = self.rfb_client.write().map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        let mut guard = self
+            .rfb_client
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(mut client) = guard.take() {
             client.disconnect();
         }
         Ok(())
+    }
+
+    pub fn start_audio_sink(&self, port: u16) -> Result<u16, CoreError> {
+        let mut guard = self
+            .audio_sink
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        if port != guard.status().port && !guard.status().running {
+            *guard = AudioTcpSink::new("127.0.0.1", port, 44100, 2);
+        }
+        Ok(guard.start()?)
+    }
+
+    pub fn stop_audio_sink(&self) -> Result<(), CoreError> {
+        let mut guard = self
+            .audio_sink
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        guard.stop();
+        Ok(())
+    }
+
+    pub fn read_audio_pcm(&self, out: &mut [u8]) -> Result<usize, CoreError> {
+        let guard = self
+            .audio_sink
+            .read()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        Ok(guard.read_samples(out))
+    }
+
+    pub fn get_audio_status(&self) -> Result<AudioStatusInfo, CoreError> {
+        let guard = self
+            .audio_sink
+            .read()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        Ok(guard.status())
     }
 
     pub fn init_wine_prefix(
@@ -357,7 +571,7 @@ impl EngineCore {
         env_id: &str,
         prefix_path: &str,
         arch: WineArch,
-    ) -> Result<androidpc_runtime_api::ProcessCommand, CoreError> {
+    ) -> Result<ProcessCommand, CoreError> {
         let prefix = if prefix_path.is_empty() {
             std::path::PathBuf::from("/home/user/.wine")
         } else {
@@ -365,11 +579,29 @@ impl EngineCore {
         };
 
         let mut wine_cfg = WineConfig::default();
-        wine_cfg.prefix_path = prefix;
+        wine_cfg.prefix_path = prefix.clone();
         wine_cfg.arch = arch;
 
         self.wine_supervisor.register_session(env_id, wine_cfg.clone())?;
         let cmd = WineCommandBuilder::build_wineboot_command(&wine_cfg);
+
+        // Prepare prefix directory on rootfs if environment exists and attempt guest execution
+        let mut guard = self
+            .environments
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        if let Some(env_mgr) = guard.get_mut(env_id) {
+            let clean_rel = prefix.strip_prefix("/").unwrap_or(&prefix);
+            let host_prefix = env_mgr.config().rootfs_directory.join(clean_rel);
+            let _ = std::fs::create_dir_all(host_prefix.join("drive_c").join("windows").join("system32"));
+
+            let mut guest_argv = vec![cmd.program.clone()];
+            guest_argv.extend(cmd.args.clone());
+            if let Ok(pid) = env_mgr.execute_guest_command_with_env(&guest_argv, &cmd.env) {
+                let _ = self.wine_supervisor.add_wine_pid(env_id, pid);
+            }
+        }
+
         Ok(cmd)
     }
 
@@ -378,7 +610,7 @@ impl EngineCore {
         env_id: &str,
         exe_path: &str,
         args: &[String],
-    ) -> Result<androidpc_runtime_api::ProcessCommand, CoreError> {
+    ) -> Result<ProcessCommand, CoreError> {
         let config = self
             .wine_supervisor
             .get_session_config(env_id)?
@@ -387,10 +619,33 @@ impl EngineCore {
         Ok(cmd)
     }
 
-    pub fn terminate_wine_session(
+    /// Builds and dispatches a Windows application launch command inside the PRoot guest if provisioned.
+    /// Returns `(ProcessCommand, Option<ProcessId>)`.
+    pub fn launch_wine_app(
         &self,
         env_id: &str,
-    ) -> Result<androidpc_runtime_api::ProcessCommand, CoreError> {
+        exe_path: &str,
+        args: &[String],
+    ) -> Result<(ProcessCommand, Option<ProcessId>), CoreError> {
+        let cmd = self.build_wine_launch_command(env_id, exe_path, args)?;
+        let mut guest_argv = vec![cmd.program.clone()];
+        guest_argv.extend(cmd.args.clone());
+
+        let mut spawned_pid = None;
+        let mut guard = self
+            .environments
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        if let Some(env_mgr) = guard.get_mut(env_id) {
+            if let Ok(pid) = env_mgr.execute_guest_command_with_env(&guest_argv, &cmd.env) {
+                let _ = self.wine_supervisor.add_wine_pid(env_id, pid);
+                spawned_pid = Some(pid);
+            }
+        }
+        Ok((cmd, spawned_pid))
+    }
+
+    pub fn terminate_wine_session(&self, env_id: &str) -> Result<ProcessCommand, CoreError> {
         let config = self
             .wine_supervisor
             .get_session_config(env_id)?
@@ -409,18 +664,50 @@ impl EngineCore {
             if let Some(env_mgr) = guard.get(env_id) {
                 env_mgr.config().rootfs_directory.clone()
             } else {
-                self.config.base_data_dir.join("rootfs").join(env_id)
+                self.config.base_data_dir.join("environments").join(env_id).join("rootfs")
             }
         };
 
         let status = self.wine_supervisor.get_status(env_id, &rootfs)?;
         Ok(status)
     }
+
+    pub fn probe_kvm_support(&self) -> KvmCapabilities {
+        KvmCapabilities::probe()
+    }
+
+    pub fn create_vm(
+        &self,
+        id: &str,
+        arch: VmArch,
+        memory_mb: u32,
+        cpus: u8,
+        disk_size_mb: u32,
+    ) -> Result<VmStatusInfo, CoreError> {
+        Ok(self.vm_supervisor.create_vm(id, arch, memory_mb, cpus, disk_size_mb)?)
+    }
+
+    pub fn start_vm(&self, id: &str) -> Result<VmStatusInfo, CoreError> {
+        Ok(self.vm_supervisor.start_vm(id)?)
+    }
+
+    pub fn stop_vm(&self, id: &str) -> Result<(), CoreError> {
+        Ok(self.vm_supervisor.stop_vm(id)?)
+    }
+
+    pub fn delete_vm(&self, id: &str) -> Result<(), CoreError> {
+        Ok(self.vm_supervisor.delete_vm(id)?)
+    }
+
+    pub fn list_vms(&self) -> Vec<VmStatusInfo> {
+        self.vm_supervisor.list_vms()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use androidpc_wine::WineSessionState;
 
     #[test]
     fn test_engine_lifecycle_and_version() {
@@ -460,6 +747,36 @@ mod tests {
     }
 
     #[test]
+    fn test_environment_persistence_and_stop_preserves_entry() {
+        let tmp_base = std::env::temp_dir().join("androidpc_core_persist_test");
+        let _ = std::fs::remove_dir_all(&tmp_base);
+        let cfg = EngineConfig {
+            base_data_dir: tmp_base.clone(),
+            runtime_artifacts_dir: tmp_base.join("artifacts"),
+            temporary_dir: tmp_base.join("tmp"),
+            ..EngineConfig::default()
+        };
+
+        {
+            let core = EngineCore::new(cfg.clone()).unwrap();
+            core.provision_environment("env-ubuntu", "ubuntu").unwrap();
+            assert_eq!(core.get_environment_state("env-ubuntu"), Some(EnvironmentState::Stopped));
+            core.stop_environment("env-ubuntu").unwrap();
+            assert_eq!(core.get_environment_state("env-ubuntu"), Some(EnvironmentState::Stopped));
+        }
+
+        // Reload in a fresh EngineCore instance
+        let core2 = EngineCore::new(cfg).unwrap();
+        let envs = core2.list_environments();
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].id, "env-ubuntu");
+
+        core2.delete_environment("env-ubuntu").unwrap();
+        assert!(core2.list_environments().is_empty());
+        let _ = std::fs::remove_dir_all(&tmp_base);
+    }
+
+    #[test]
     fn test_wine_integration() {
         let config = EngineConfig::default();
         let core = EngineCore::new(config).expect("EngineCore::new should succeed");
@@ -473,10 +790,29 @@ mod tests {
         assert_eq!(status.arch, WineArch::Win64);
         assert_eq!(status.state, WineSessionState::Ready);
 
-        let launch_cmd = core
-            .build_wine_launch_command("test-env", "notepad.exe", &[])
+        let (launch_cmd, _) = core
+            .launch_wine_app("test-env", "notepad.exe", &[])
             .expect("build launch command");
         assert_eq!(launch_cmd.program, "box64");
         assert_eq!(launch_cmd.args, vec!["wine", "notepad.exe"]);
+    }
+
+    #[test]
+    fn test_vm_lifecycle() {
+        let tmp_base = std::env::temp_dir().join("androidpc_core_vm_test");
+        let _ = std::fs::remove_dir_all(&tmp_base);
+        let cfg = EngineConfig {
+            base_data_dir: tmp_base.clone(),
+            runtime_artifacts_dir: tmp_base.join("artifacts"),
+            temporary_dir: tmp_base.join("tmp"),
+            ..EngineConfig::default()
+        };
+        let core = EngineCore::new(cfg).unwrap();
+        let vm = core.create_vm("vm-alpine", VmArch::Aarch64, 512, 2, 512).unwrap();
+        assert_eq!(vm.id, "vm-alpine");
+        assert_eq!(core.list_vms().len(), 1);
+        core.delete_vm("vm-alpine").unwrap();
+        assert!(core.list_vms().is_empty());
+        let _ = std::fs::remove_dir_all(&tmp_base);
     }
 }

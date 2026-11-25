@@ -14,9 +14,12 @@ androidpc-filesystem = { path = "../filesystem" }
 androidpc-process = { path = "../process" }
 androidpc-linux-runtime = { path = "../linux-runtime" }
 androidpc-display = { path = "../display" }
+androidpc-audio = { path = "../audio" }
 androidpc-terminal = { path = "../terminal" }
 androidpc-wine = { path = "../wine" }
+androidpc-vm = { path = "../vm" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+libc.workspace = true

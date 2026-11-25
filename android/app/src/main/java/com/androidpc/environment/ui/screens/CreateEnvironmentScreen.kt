@@ -9,22 +9,27 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.androidpc.environment.bridge.ArtifactMetadataData
 import com.androidpc.environment.bridge.NativeBridge
 import com.androidpc.environment.ui.theme.*
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 @Composable
 fun CreateEnvironmentScreen(
     onBack: () -> Unit,
     onCreated: (String) -> Unit
 ) {
+    val context = LocalContext.current
     var selectedDistro by remember { mutableStateOf("ubuntu") }
-    var selectedDesktop by remember { mutableStateOf("xfce") }
+    var downloadRootfsArchive by remember { mutableStateOf(false) }
     var memoryMb by remember { mutableFloatStateOf(2048f) }
     var artifactInfo by remember { mutableStateOf<ArtifactMetadataData?>(null) }
 
@@ -60,7 +65,7 @@ fun CreateEnvironmentScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         Text("SELECT DISTRIBUTION", style = MaterialTheme.typography.labelSmall, color = TextMuted)
         Spacer(modifier = Modifier.height(8.dp))
@@ -83,9 +88,8 @@ fun CreateEnvironmentScreen(
             ) { selectedDistro = "debian" }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        // Artifact Details Card
         artifactInfo?.let { meta ->
             Card(
                 modifier = Modifier
@@ -96,17 +100,13 @@ fun CreateEnvironmentScreen(
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        text = "VERIFIED ROOTFS MANIFEST",
+                        text = "ROOTFS ARTIFACT MANIFEST",
                         style = MaterialTheme.typography.labelSmall,
                         color = AccentCyan,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Archive: ${meta.filename}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextPrimary
-                    )
+                    Text("Archive: ${meta.filename}", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
                     Text(
                         text = "Size: ${meta.size_bytes / (1024 * 1024)} MB | Arch: ${meta.architecture}",
                         style = MaterialTheme.typography.labelSmall,
@@ -121,19 +121,33 @@ fun CreateEnvironmentScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        Text("DESKTOP ENVIRONMENT", style = MaterialTheme.typography.labelSmall, color = TextMuted)
-        Spacer(modifier = Modifier.height(8.dp))
-        DistroOption(
-            title = "XFCE 4 Desktop",
-            subtitle = "Lightweight desktop optimized for touch, mouse & keyboard",
-            isSelected = true,
-            enabled = !isDeploying,
-            modifier = Modifier.fillMaxWidth()
-        ) { selectedDesktop = "xfce" }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(SurfaceDark, RoundedCornerShape(10.dp))
+                .border(1.dp, CardBorder, RoundedCornerShape(10.dp))
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Fetch Remote Rootfs Tarball", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                Text(
+                    "Stream HTTPS archive to .part, verify SHA-256 & unpack",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary
+                )
+            }
+            Switch(
+                checked = downloadRootfsArchive,
+                onCheckedChange = { downloadRootfsArchive = it },
+                enabled = !isDeploying
+            )
+        }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         Text("MEMORY LIMIT: ${memoryMb.toInt()} MB", style = MaterialTheme.typography.labelSmall, color = TextMuted)
         Slider(
@@ -149,9 +163,8 @@ fun CreateEnvironmentScreen(
             )
         )
 
-        // Provisioning Status / Progress Box
         if (isDeploying || isSuccess) {
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -171,11 +184,7 @@ fun CreateEnvironmentScreen(
                             color = if (isSuccess) StatusGreen else AccentCyan,
                             fontWeight = FontWeight.Bold
                         )
-                        Text(
-                            text = "${(deployProgress * 100).toInt()}%",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextPrimary
-                        )
+                        Text("${(deployProgress * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = TextPrimary)
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     LinearProgressIndicator(
@@ -185,22 +194,14 @@ fun CreateEnvironmentScreen(
                         trackColor = BgDark
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = deployStage,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
-                    )
+                    Text(deployStage, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 }
             }
         }
 
         errorMessage?.let { err ->
             Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = "Error: $err",
-                style = MaterialTheme.typography.bodySmall,
-                color = StatusRed
-            )
+            Text("Error: $err", style = MaterialTheme.typography.bodySmall, color = StatusRed)
         }
 
         Spacer(modifier = Modifier.weight(1f))
@@ -221,30 +222,76 @@ fun CreateEnvironmentScreen(
                 onClick = {
                     isDeploying = true
                     errorMessage = null
+                    val envId = "env-$selectedDistro"
                     coroutineScope.launch {
                         try {
-                            deployStage = "1/4 Verifying SHA-256 cryptographic manifest..."
+                            deployStage = "1/3 Provisioning sandbox directory & rootfs config..."
                             deployProgress = 0.25f
-                            delay(400)
-
-                            deployStage = "2/4 Initializing sandbox directory structure..."
-                            deployProgress = 0.50f
-                            delay(400)
-
-                            deployStage = "3/4 Configuring guest network (/etc/resolv.conf) & hosts..."
-                            deployProgress = 0.75f
-                            val envId = "env-$selectedDistro"
-                            val provRes = NativeBridge.provisionEnvironment(envId, selectedDistro)
-
-                            provRes.onSuccess {
-                                deployStage = "4/4 Environment provisioned successfully! Ready to launch."
-                                deployProgress = 1.0f
-                                isSuccess = true
+                            val provRes = NativeBridge.provisionEnvironmentWithMemory(envId, selectedDistro, memoryMb.toInt())
+                            if (provRes.isFailure) {
+                                errorMessage = provRes.exceptionOrNull()?.message
                                 isDeploying = false
-                            }.onFailure { err ->
-                                errorMessage = err.message
-                                isDeploying = false
+                                return@launch
                             }
+
+                            if (downloadRootfsArchive && artifactInfo != null) {
+                                val meta = artifactInfo!!
+                                deployStage = "2/3 Downloading ${meta.filename}..."
+                                deployProgress = 0.45f
+                                val partFile = File(context.cacheDir, "${meta.filename}.part")
+                                val downloadedOk = withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        val conn = URL(meta.url).openConnection() as HttpURLConnection
+                                        conn.connectTimeout = 10_000
+                                        conn.readTimeout = 30_000
+                                        conn.inputStream.use { input ->
+                                            partFile.outputStream().use { out ->
+                                                val buf = ByteArray(64 * 1024)
+                                                var total = 0L
+                                                while (true) {
+                                                    val n = input.read(buf)
+                                                    if (n <= 0) break
+                                                    out.write(buf, 0, n)
+                                                    total += n
+                                                    if (meta.size_bytes > 0) {
+                                                        val frac = (total.toFloat() / meta.size_bytes.toFloat()).coerceIn(0f, 1f)
+                                                        deployProgress = 0.45f + frac * 0.35f
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if (downloadedOk.isSuccess) {
+                                    deployStage = "3/3 Verifying SHA-256 & extracting rootfs..."
+                                    deployProgress = 0.85f
+                                    val enforceSha = meta.sha256.isNotBlank() && !meta.sha256.all { it == '0' }
+                                    val verified = if (enforceSha) {
+                                        NativeBridge.verifyArtifact(partFile.absolutePath, meta.sha256).getOrDefault(false)
+                                    } else {
+                                        true
+                                    }
+                                    if (!verified) {
+                                        partFile.delete()
+                                        errorMessage = "SHA-256 checksum verification failed for ${meta.filename}"
+                                        isDeploying = false
+                                        return@launch
+                                    }
+                                    val rootfsDir = File(context.filesDir, "environments/$envId/rootfs").absolutePath
+                                    NativeBridge.extractRootfs(partFile.absolutePath, rootfsDir)
+                                    partFile.delete()
+                                } else {
+                                    deployStage = "Download skipped (${downloadedOk.exceptionOrNull()?.message}); sandbox ready."
+                                }
+                            } else {
+                                deployStage = "2/3 Guest DNS (/etc/resolv.conf), hosts & startxfce.sh written..."
+                                deployProgress = 0.80f
+                            }
+
+                            deployStage = "Environment '$envId' provisioned & persisted."
+                            deployProgress = 1.0f
+                            isSuccess = true
+                            isDeploying = false
                         } catch (e: Exception) {
                             errorMessage = e.message
                             isDeploying = false

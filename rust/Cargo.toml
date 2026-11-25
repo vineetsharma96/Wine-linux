@@ -9,8 +9,10 @@ members = [
     "crates/process",
     "crates/linux-runtime",
     "crates/display",
+    "crates/audio",
     "crates/terminal",
     "crates/wine",
+    "crates/vm",
     "crates/core",
     "crates/android-bridge",
 ]

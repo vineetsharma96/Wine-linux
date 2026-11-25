@@ -32,6 +32,8 @@
 - [ ] Wine / Proton integration inside the rootless Linux guest.
 - [ ] DXVK / VKD3D Direct3D-to-Vulkan translation.
 
-## Phase 5: Virtual Machine Virtualization (Future)
-- [ ] QEMU integration for full system virtualization.
-- [ ] KVM support for Android devices with exposed `/dev/kvm` virtualization extensions.
+## Phase 5: Virtual Machine Virtualization (In Progress — Core & UI Implemented)
+- [x] QEMU crate (`androidpc-vm`) with `aarch64` (`virt`) & `x86_64` (`q35`) command builder, VirtIO disk/network, VNC & QMP integration.
+- [x] `/dev/kvm` capability probe with automatic rootless TCG fallback.
+- [x] `VirtualMachinesScreen.kt` UI & `DisplayViewportScreen` VNC port routing.
+- [ ] Standalone `qemu-system-aarch64` / `qemu-system-x86_64` binary packaging.

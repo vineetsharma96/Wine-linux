@@ -31,12 +31,22 @@ dependencies = [
  "androidpc-process",
  "androidpc-runtime-api",
  "androidpc-terminal",
+ "androidpc-vm",
  "androidpc-wine",
  "flate2",
  "jni",
  "serde",
  "serde_json",
  "tar",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "androidpc-audio"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "thiserror 2.0.21",
  "tracing",
 ]
@@ -55,6 +65,7 @@ dependencies = [
 name = "androidpc-core"
 version = "0.1.0"
 dependencies = [
+ "androidpc-audio",
  "androidpc-configuration",
  "androidpc-display",
  "androidpc-downloader",
@@ -64,7 +75,9 @@ dependencies = [
  "androidpc-process",
  "androidpc-runtime-api",
  "androidpc-terminal",
+ "androidpc-vm",
  "androidpc-wine",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -166,6 +179,18 @@ dependencies = [
  "androidpc-runtime-api",
  "libc",
  "serde",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "androidpc-vm"
+version = "0.1.0"
+dependencies = [
+ "androidpc-process",
+ "androidpc-runtime-api",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tracing",
 ]

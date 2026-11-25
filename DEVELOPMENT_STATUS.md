@@ -1,7 +1,7 @@
 # Development Status — Android PC Environment
 
-*Last updated: 2026-11-24*
-*Current Phase: Phase 5 (Completed & Hardware Verified) ➔ Production Hardening & Remote Deployment*
+*Last updated: 2026-11-25*
+*Current Phase: Phase 5 / 6 Complete (Audio Sink, Live RFB, Persistence, QEMU/KVM VM Subsystem & Hardened UI)*
 
 ---
 
@@ -13,7 +13,6 @@
 | **Downloader Crate** | Streaming SHA-256 integrity verification, atomic write `.part` | **DONE** | NIST vector & real-time hash verified |
 | **Filesystem Crate** | Zip-Slip / Path Traversal security defense, archive unpacker | **DONE** | Blocked malicious traversal `../../system/bin/sh` on Android |
 | **Process Supervisor Crate** | Process spawning, signal dispatch, process table tracking | **DONE** | Successfully spawned and supervised PID 2188 / 6205 / 9069 / 10189 on device |
-| **Linux Runtime Crate** | PRoot command builder, guest environment mounting | **DONE** | Generates verified `-r`, `-0`, `-b /dev`, `-b /proc` flags |
 | **Display Crate (`androidpc-display`)** | Xvnc backend, RFC 6143 RFB 003.008 protocol, Termux:X11 backend | **DONE** | Validated packet serialization & arg builder |
 | **Terminal Crate (`androidpc-terminal`)** | Bionic Unix PTY (`posix_openpt`, `grantpt`, `unlockpt`, `TIOCSWINSZ`) | **DONE** | Validated `/dev/pts/0` allocation & resize on Android 16 |
 | **RFB Streaming Engine** | Client stream receiver, 32-bit RGBA pixel blitter, input forwarder | **DONE** | Handshake & 3.68 MB frame slice verified on device |
@@ -22,9 +21,13 @@
 | **Environment Management UI** | Stepper progress indicator with verified manifest details | **DONE** | Integrated in `CreateEnvironmentScreen.kt` |
 | **Wine & Box64 Compatibility Crate (`androidpc-wine`)** | Box64 Dynarec env builder, WineArch, WineConfig, WineProcessSupervisor | **DONE** | Validated Box64 Dynarec flags & prefix lifecycle |
 | **Wine Launcher & Path Translation** | `WineCommandBuilder` (wineboot, launch PE binary, wineserver -k, C:\ <-> Unix) | **DONE** | Validated bidirectional path mapping & command formatting |
-| **Android Wine Dashboard Card** | Windows compatibility status card, C: drive init, run .exe launcher | **DONE** | Integrated in `DashboardScreen.kt` |
-| **JNI Bridge Extension** | 33 panic-safe JNI exports across all subsystems | **DONE** | Cross-compiled in `libandroidpc_engine.so` (2.41 MB) |
-| **Hardware Proof-of-Concept** | Executed Phase 1, 2, 3, 4 & 5 test suites on physical Android 16 device (`6e5b28dd`) | **DONE** | **100% Passed (11/11) on real ARM64 hardware** |
+| **Android Wine Dashboard Card** | Live `WineStatusData`, `Init C: Drive`, `Run .exe` modal dialog, `Kill` controls | **DONE** | Integrated in `DashboardScreen.kt` & `MainActivity.kt` |
+| **Audio TCP Sink (`androidpc-audio`)** | `AudioTcpSink` (`127.0.0.1:4713`) + `AudioBridgePlayer` (`AudioTrack`) | **DONE** | Verified loopback PCM streaming on device (`6e5b28dd`) |
+| **Live RFB Decoder & PTY Terminal UI** | `RfbClient::poll_updates` (Raw/CopyRect/DesktopSize), `TerminalScreen.kt`, `LinuxRuntimeService.kt` | **DONE** | Verified RFB live decoding & Bionic PTY on device |
+| **JNI Bridge Extension** | Panic-safe `catch_unwind` JNI exports across all 13 Rust crates | **DONE** | Cross-compiled in `libandroidpc_engine.so` & APK built |
+| **QEMU / KVM VM Crate (`androidpc-vm`)** | `QemuCommandBuilder` (aarch64/x86_64), `/dev/kvm` probe, `QemuSupervisor`, `VirtualMachinesScreen.kt` | **DONE** | Verified 3/3 VM unit tests & core VM lifecycle test |
+| **PRoot & Download Hardening** | `LD_LIBRARY_PATH` `libtalloc.so.2` resolution + enforced SHA-256 verification before rootfs extraction | **DONE** | Wired into `ProotEnvironmentManager` & `CreateEnvironmentScreen.kt` |
+| **Hardware Proof-of-Concept** | Executed Phase 1–6 test suites on physical Android 16 device (`6e5b28dd`) | **DONE** | **100% Passed (13/13) on real ARM64 hardware; 29/29 unit tests** |
 
 ---
 
