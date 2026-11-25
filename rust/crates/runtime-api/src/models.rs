@@ -61,6 +61,17 @@ impl Architecture {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnvironmentState {
+    NotInstalled,
+    Downloading,
+    Verifying,
+    Extracting,
+    Initializing,
+    Ready,
+    Failed,
+    Recovering,
+    Updating,
+    BackingUp,
+    Restoring,
     Uninitialized,
     Provisioning,
     Stopped,
@@ -117,6 +128,9 @@ pub struct SystemDiagnostics {
     pub rootless_ptrace_supported: bool,
     pub seccomp_restricted: bool,
     pub proot_ready: bool,
+    pub proot_version: Option<String>,
+    pub android_release: Option<String>,
+    pub last_guest_check_epoch_ms: Option<u64>,
     pub reports: Vec<SubsystemHealth>,
 }
 

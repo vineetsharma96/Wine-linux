@@ -3,6 +3,28 @@ use serde::{Deserialize, Serialize};
 use androidpc_runtime_api::{Architecture, ArtifactProvider, RuntimeError};
 use crate::verifier::Sha256Verifier;
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RootfsManifest {
+    schema_version: u32,
+    rootfs: Vec<RootfsEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RootfsEntry {
+    distribution: String,
+    release: String,
+    artifact_version: String,
+    architecture: Architecture,
+    filename: String,
+    url: String,
+    archive_format: String,
+    sha256: String,
+    size_bytes: u64,
+    min_app_version_code: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactMetadata {
     pub name: String,
@@ -16,6 +38,7 @@ pub struct ArtifactMetadata {
 
 pub struct DefaultArtifactProvider {
     catalog: Vec<ArtifactMetadata>,
+    expected_releases: std::collections::HashMap<String, String>,
 }
 
 impl Default for DefaultArtifactProvider {
@@ -25,27 +48,79 @@ impl Default for DefaultArtifactProvider {
 }
 
 impl DefaultArtifactProvider {
+    pub fn from_signed_rootfs(
+        manifest: &[u8],
+        signature: &[u8],
+        public_key: &str,
+        app_version_code: u32,
+    ) -> Result<Self, RuntimeError> {
+        let invalid = |reason: &str| RuntimeError::InitializationFailed(format!("Rootfs catalog: {reason}"));
+        if manifest.len() > 64 * 1024 || !androidpc_security::verify_ed25519_manifest(manifest, signature, public_key) {
+            return Err(invalid("release signature verification failed"));
+        }
+        let manifest: RootfsManifest = serde_json::from_slice(manifest)?;
+        if manifest.schema_version != 1 || manifest.rootfs.len() != 2 {
+            return Err(invalid("expected schema 1 with Ubuntu and Debian artifacts"));
+        }
+        let mut provider = Self::new();
+        provider.catalog.retain(|item| !matches!(item.distribution.as_str(), "ubuntu" | "debian"));
+        for entry in manifest.rootfs {
+            let token = |value: &str| !value.is_empty() && value.len() <= 128
+                && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+            if !matches!(entry.distribution.as_str(), "ubuntu" | "debian")
+                || entry.architecture != Architecture::Aarch64
+                || provider.catalog.iter().any(|item| item.distribution == entry.distribution)
+                || !token(&entry.release) || !token(&entry.artifact_version) || !token(&entry.filename)
+                || !matches!(entry.archive_format.as_str(), "tar.gz" | "tar.xz")
+                || !entry.filename.ends_with(&format!(".{}", entry.archive_format))
+                || !entry.url.starts_with("https://") || entry.url.len() > 2048
+                || !entry.url[8..].split('/').next().is_some_and(|host| {
+                    host.contains('.') && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+                })
+                || entry.url.bytes().any(|b| !b.is_ascii_graphic() || matches!(b, b'@' | b'\\' | b'#'))
+                || entry.size_bytes == 0
+                || entry.min_app_version_code == 0 || entry.min_app_version_code > app_version_code
+                || entry.sha256.len() != 64 || !entry.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                || entry.sha256.bytes().all(|b| b == b'0')
+            {
+                return Err(invalid("invalid or incompatible artifact fields"));
+            }
+            provider.expected_releases.insert(entry.distribution.clone(), entry.release.clone());
+            provider.catalog.push(ArtifactMetadata {
+                name: format!("{}-{}-{}", entry.distribution, entry.release, entry.artifact_version),
+                distribution: entry.distribution,
+                architecture: entry.architecture,
+                filename: entry.filename,
+                url: entry.url,
+                sha256: entry.sha256.to_ascii_lowercase(),
+                size_bytes: entry.size_bytes,
+            });
+        }
+        Ok(provider)
+    }
+
     pub fn new() -> Self {
         Self {
+            expected_releases: [("ubuntu".to_string(), "26.04".to_string()), ("debian".to_string(), "13".to_string())].into(),
             catalog: vec![
                 // ARM64 (aarch64) verified upstream releases
                 ArtifactMetadata {
-                    name: "ubuntu-24.04-arm64".to_string(),
+                    name: "ubuntu-26.04-arm64".to_string(),
                     distribution: "ubuntu".to_string(),
                     architecture: Architecture::Aarch64,
-                    filename: "ubuntu-base-24.04.5-base-arm64.tar.gz".to_string(),
-                    url: "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz".to_string(),
-                    sha256: "a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2".to_string(),
-                    size_bytes: 29_936_675,
+                    filename: "ubuntu-base-26.04.1-base-arm64.tar.gz".to_string(),
+                    url: "https://cdimage.ubuntu.com/ubuntu-base/releases/26.04/release/ubuntu-base-26.04.1-base-arm64.tar.gz".to_string(),
+                    sha256: "5a1906794ced63a71a8119c3f211ef5f0bbe0a243001b4bbd41fdf80c5b219fd".to_string(),
+                    size_bytes: 35_092_106,
                 },
                 ArtifactMetadata {
-                    name: "debian-12-arm64".to_string(),
+                    name: "debian-13-arm64".to_string(),
                     distribution: "debian".to_string(),
                     architecture: Architecture::Aarch64,
-                    filename: "debian-bookworm-aarch64-pd-v4.17.3.tar.xz".to_string(),
-                    url: "https://github.com/termux/proot-distro/releases/download/v4.17.3/debian-bookworm-aarch64-pd-v4.17.3.tar.xz".to_string(),
-                    sha256: "3a841a794ae5999b33e33b329582ed0379d4f54ca62c6ce5a8eb9cff5ef8900b".to_string(),
-                    size_bytes: 42_912_980,
+                    filename: "debian-13.8-slim-arm64.tar.gz".to_string(),
+                    url: "https://raw.githubusercontent.com/debuerreotype/docker-debian-artifacts/657d5664bd8e7d6833fa48225b8110774cc17666/trixie/slim/oci/blobs/rootfs.tar.gz".to_string(),
+                    sha256: "48fb00926fe468d83ca04ee6775f36350d17e0f328dfcb03aadb5de0c52ae3f6".to_string(),
+                    size_bytes: 30_198_034,
                 },
                 ArtifactMetadata {
                     name: "proot-arm64".to_string(),
@@ -129,6 +204,10 @@ impl DefaultArtifactProvider {
         &self.catalog
     }
 
+    pub fn expected_release(&self, distro: &str) -> Option<&str> {
+        self.expected_releases.get(distro).map(String::as_str)
+    }
+
     pub fn list_for_architecture(&self, arch: Architecture) -> Vec<ArtifactMetadata> {
         self.catalog
             .iter()
@@ -158,5 +237,41 @@ impl ArtifactProvider for DefaultArtifactProvider {
     fn verify_artifact(&self, path: &Path, expected_sha256: &str) -> Result<bool, RuntimeError> {
         Sha256Verifier::verify_file(path, expected_sha256)
             .map_err(|e| RuntimeError::Internal(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    #[test]
+    fn signed_catalog_rejects_tampering_duplicate_and_incompatible_artifacts() {
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let public_key = hex::encode(key.verifying_key().as_bytes());
+        let manifest = |guest: &str, minimum_version: u32| {
+            let artifact = |distribution| serde_json::json!({
+                "distribution": distribution, "release": "1", "artifact_version": "1",
+                "architecture": "aarch64", "filename": "example.tar.gz",
+                "url": "https://example.com/example.tar.gz", "archive_format": "tar.gz",
+                "sha256": "b".repeat(64), "size_bytes": 123, "min_app_version_code": minimum_version
+            });
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1, "rootfs": [artifact("ubuntu"), artifact(guest)]
+            })).unwrap()
+        };
+        let bytes = manifest("debian", 1);
+        let sig = key.sign(&bytes).to_bytes();
+        let catalog = DefaultArtifactProvider::from_signed_rootfs(&bytes, &sig, &public_key, 1).unwrap();
+        assert_eq!(catalog.find_by_distribution("debian", Architecture::Aarch64).unwrap().size_bytes, 123);
+
+        for invalid in [manifest("ubuntu", 1), manifest("debian", 2)] {
+            let invalid_sig = key.sign(&invalid).to_bytes();
+            assert!(DefaultArtifactProvider::from_signed_rootfs(&invalid, &invalid_sig, &public_key, 1).is_err());
+        }
+        let mut changed = bytes;
+        changed.push(b' ');
+        assert!(DefaultArtifactProvider::from_signed_rootfs(&changed, &sig, &public_key, 1).is_err());
+        assert!(DefaultArtifactProvider::from_signed_rootfs(&changed, &sig[..63], &public_key, 1).is_err());
     }
 }

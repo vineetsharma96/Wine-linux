@@ -1,0 +1,24 @@
+[
+  {
+    "distribution": "ubuntu",
+    "release": "26.04",
+    "artifact_version": "26.04.1",
+    "filename": "ubuntu-base-26.04.1-base-arm64.tar.gz",
+    "url": "https://cdimage.ubuntu.com/ubuntu-base/releases/26.04/release/ubuntu-base-26.04.1-base-arm64.tar.gz",
+    "archive_format": "tar.gz",
+    "sha256": "5a1906794ced63a71a8119c3f211ef5f0bbe0a243001b4bbd41fdf80c5b219fd",
+    "verification_source": "https://cdimage.ubuntu.com/ubuntu-base/releases/26.04/release/SHA256SUMS.gpg",
+    "min_app_version_code": 1
+  },
+  {
+    "distribution": "debian",
+    "release": "13",
+    "artifact_version": "13.8",
+    "filename": "debian-13.8-slim-arm64.tar.gz",
+    "url": "https://raw.githubusercontent.com/debuerreotype/docker-debian-artifacts/657d5664bd8e7d6833fa48225b8110774cc17666/trixie/slim/oci/blobs/rootfs.tar.gz",
+    "archive_format": "tar.gz",
+    "sha256": "48fb00926fe468d83ca04ee6775f36350d17e0f328dfcb03aadb5de0c52ae3f6",
+    "verification_source": "https://github.com/debuerreotype/docker-debian-artifacts/blob/657d5664bd8e7d6833fa48225b8110774cc17666/trixie/slim/oci/index.json",
+    "min_app_version_code": 1
+  }
+]

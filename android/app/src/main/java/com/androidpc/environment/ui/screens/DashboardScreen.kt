@@ -25,6 +25,10 @@ fun DashboardScreen(
     engineStatus: EngineStatusData?,
     healthReport: HealthReportData?,
     environments: List<EnvironmentConfigData>,
+    environmentStates: Map<String, String>,
+    environmentStorage: Map<String, Long?>,
+    availableStorageBytes: Long?,
+    environmentActionMessage: String?,
     wineStatus: WineStatusData?,
     wineActionMessage: String?,
     isRefreshing: Boolean,
@@ -33,6 +37,10 @@ fun DashboardScreen(
     onStartEnvironment: (String) -> Unit,
     onStopEnvironment: (String) -> Unit,
     onDeleteEnvironment: (String) -> Unit,
+    onRecoverEnvironment: (String, Boolean) -> Unit,
+    onOpenEnvironmentTerminal: (String) -> Unit,
+    onOpenEnvironmentDetails: (String) -> Unit,
+    onOpenBackups: () -> Unit,
     onInitWinePrefix: () -> Unit,
     onLaunchWineApp: (String, List<String>) -> Unit,
     onKillWineSession: () -> Unit,
@@ -47,6 +55,17 @@ fun DashboardScreen(
     var showRunExeDialog by remember { mutableStateOf(false) }
     var exePathInput by remember { mutableStateOf("C:\\windows\\system32\\notepad.exe") }
     var exeArgsInput by remember { mutableStateOf("") }
+    var pendingRemoval by remember { mutableStateOf<EnvironmentConfigData?>(null) }
+
+    pendingRemoval?.let { env ->
+        AlertDialog(
+            onDismissRequest = { pendingRemoval = null },
+            title = { Text("Remove this Linux environment?") },
+            text = { Text("This deletes its private files and installed packages.") },
+            confirmButton = { TextButton(onClick = { pendingRemoval = null; onDeleteEnvironment(env.id) }) { Text("Remove") } },
+            dismissButton = { TextButton(onClick = { pendingRemoval = null }) { Text("Cancel") } }
+        )
+    }
 
     if (showRunExeDialog) {
         AlertDialog(
@@ -301,7 +320,10 @@ fun DashboardScreen(
                     letterSpacing = 1.sp
                 )
             }
-            items(environments) { env ->
+            environmentActionMessage?.let { message ->
+                item { Text(message, color = TextSecondary, style = MaterialTheme.typography.bodySmall) }
+            }
+            items(environments, key = { it.id }) { env ->
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -316,27 +338,56 @@ fun DashboardScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column {
-                                Text(env.id, style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                val distro = env.distribution.replaceFirstChar(Char::uppercase)
+                                Text(env.display_name ?: distro, style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
                                 Text(
-                                    "${env.distribution.uppercase()} • ${env.memory_limit_mb ?: 2048} MB",
+                                    "$distro ${env.version} • ${env.architecture} • ${environmentStates[env.id] ?: "Checking"}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = TextSecondary
                                 )
+                                environmentStorage[env.id]?.let { bytes ->
+                                    Text("${bytes / (1024 * 1024)} MiB", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                }
+                                env.last_started_at_epoch_ms?.let { timestamp ->
+                                    val lastStarted = java.text.DateFormat.getDateTimeInstance(
+                                        java.text.DateFormat.SHORT, java.text.DateFormat.SHORT
+                                    ).format(java.util.Date(timestamp))
+                                    Text("Last started $lastStarted", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                }
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row {
+                                TextButton(onClick = { onOpenEnvironmentDetails(env.id) }) { Text("Details") }
+                                TextButton(onClick = { onOpenEnvironmentTerminal(env.id) }) { Text("Terminal") }
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                 TextButton(onClick = { onStartEnvironment(env.id) }) {
                                     Text("Start", color = StatusGreen)
                                 }
                                 TextButton(onClick = { onStopEnvironment(env.id) }) {
-                                    Text("Stop", color = StatusAmber)
+                                    Text("Stop Linux", color = StatusAmber)
                                 }
-                                TextButton(onClick = { onDeleteEnvironment(env.id) }) {
+                                TextButton(onClick = { onRecoverEnvironment(env.id, true) }) { Text("Restart") }
+                                TextButton(onClick = { onRecoverEnvironment(env.id, false) }) { Text("Repair") }
+                                TextButton(onClick = { pendingRemoval = env }, enabled = environmentStates[env.id] != "Running") {
                                     Text("Remove", color = StatusRed)
                                 }
-                            }
                         }
                     }
                 }
+            }
+        }
+
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val running = environmentStates.values.count { it == "Running" }
+                val available = availableStorageBytes?.let { " · ${it / (1024 * 1024)} MiB available" }.orEmpty()
+                Text("$running running$available", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = onOpenBackups) { Text("All backups", color = AccentCyan) }
             }
         }
 
@@ -473,6 +524,56 @@ fun DashboardScreen(
                 color = TextMuted,
                 letterSpacing = 1.sp
             )
+
+            val termuxContext = androidx.compose.ui.platform.LocalContext.current
+            var showTermuxDialog by remember { mutableStateOf(false) }
+            val termuxInstalled = remember(termuxContext) {
+                try {
+                    termuxContext.packageManager.getPackageInfo("com.termux.x11", 0)
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    if (termuxInstalled) {
+                        val intent = termuxContext.packageManager.getLaunchIntentForPackage("com.termux.x11")
+                        if (intent != null) termuxContext.startActivity(intent) else showTermuxDialog = true
+                    } else {
+                        showTermuxDialog = true
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(40.dp),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text(
+                    text = if (termuxInstalled) "Backend B: Launch Termux:X11" else "Backend B: Termux:X11 Setup",
+                    color = TextSecondary
+                )
+            }
+
+            if (showTermuxDialog) {
+                AlertDialog(
+                    onDismissRequest = { showTermuxDialog = false },
+                    title = { Text("Termux:X11 External Backend", color = TextPrimary) },
+                    text = {
+                        Text(
+                            if (termuxInstalled) {
+                                "Termux:X11 is installed. Start Termux:X11 and set DISPLAY=:0 inside your Linux environment to route X11 output externally."
+                            } else {
+                                "com.termux.x11 is not installed on this device.\n\nRequirements:\n1. Install the Termux:X11 Android APK.\n2. Start Termux:X11 and share its X11 socket/DISPLAY=:0.\n3. Note: Android app sandboxes isolate /data/data/com.termux unless explicitly bridged; use Integrated Xvnc for self-contained rootless desktop."
+                            },
+                            color = TextSecondary
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showTermuxDialog = false }) { Text("OK") }
+                    }
+                )
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
 

@@ -2,6 +2,15 @@
 
 All notable changes to the **Android PC Environment** project will be documented in this file.
 
+## [0.7.0-alpha.0] - 2026-11-25
+### Phase 6: Production Runtime Hardening, Live RFB Decoder, Audio Sink & Full UI Wiring
+- **Audio Subsystem (`androidpc-audio`)**: Added `AudioTcpSink` listening on `127.0.0.1:4713` with an S16LE PCM ring buffer and Kotlin `AudioBridgePlayer` (`AudioTrack`) playback bridge.
+- **Live RFB Framebuffer Decoder (`androidpc-display`)**: Implemented `RfbClient::poll_updates()` decoding `Raw`, `CopyRect`, and `DesktopSize` rectangles with `PixelFormat`-to-RGBA conversion, and wired `EngineCore::get_framebuffer_slice()` to poll live updates.
+- **PRoot Hardening & Environment Persistence (`androidpc-linux-runtime`, `androidpc-filesystem`, `androidpc-core`)**: Added `--kill-on-exit`, `--link2symlink`, `/dev/shm` bind emulation, `PROOT_TMP_DIR`, `startxfce.sh` guest provisioning, persistent `config.json` reload on startup, `start_environment`, `delete_environment`, and real `statvfs` / artifact-existence diagnostics.
+- **Multi-Architecture Artifact Catalog (`androidpc-downloader`)**: Expanded `DefaultArtifactProvider` to `aarch64`, `x86_64`, and `armv7`, and added `DownloadManager::verify_and_commit_part` for atomic `.part` verification.
+- **Wine Execution & Dashboard Controls**: Wired `init_wine_prefix` and `launch_wine_app` to execute inside provisioned PRoot environments, plus live `WineStatusData` cards, `Init C: Drive`, `Run .exe` launcher dialog, and `Kill` controls in `DashboardScreen.kt`.
+- **Android UI & Foreground Service**: Added `TerminalScreen.kt` (live Bionic PTY console), `LinuxRuntimeService.kt` (`FOREGROUND_SERVICE_SPECIAL_USE`), interactive `SettingsScreen.kt` with Rust log viewer, and HTTPS rootfs download + SHA-256 extraction flow in `CreateEnvironmentScreen.kt`.
+
 ## [0.6.0-alpha.0] - 2026-11-24
 ### Phase 5: Windows Application Compatibility (Wine & Box64 Subsystem)
 - **Wine Crate (`androidpc-wine`)**: Created dedicated crate implementing `WineConfig`, `Box64Config`, `WineArch` (Win32, Win64, WoW64), `WineSessionState`, and `WineStatusInfo`.

@@ -23,6 +23,10 @@ pub enum DisplayError {
     Disconnected,
 }
 
+pub const MAX_FRAMEBUFFER_DIM: u16 = 8192;
+pub const MAX_CLIPBOARD_BYTES: usize = 256 * 1024;
+pub const MAX_SERVER_CUT_BYTES: usize = 1024 * 1024;
+
 pub struct RfbClient {
     stream: Option<TcpStream>,
     pub width: u16,
@@ -31,6 +35,9 @@ pub struct RfbClient {
     pub server_name: String,
     pub framebuffer: Vec<u8>, // RGBA 32-bit (width * height * 4)
     pub is_connected: bool,
+    pub server_clipboard: Option<String>,
+    pub generation: u64,
+    update_pending: bool,
 }
 
 impl RfbClient {
@@ -43,6 +50,9 @@ impl RfbClient {
             server_name: "Offline Simulated Display".to_string(),
             framebuffer: vec![0u8; (width as usize) * (height as usize) * 4],
             is_connected: false,
+            server_clipboard: None,
+            generation: 1,
+            update_pending: false,
         };
         client.generate_test_card();
         client
@@ -103,6 +113,11 @@ impl RfbClient {
 
         let width = u16::from_be_bytes([init_header[0], init_header[1]]);
         let height = u16::from_be_bytes([init_header[2], init_header[3]]);
+        if width == 0 || height == 0 || width > MAX_FRAMEBUFFER_DIM || height > MAX_FRAMEBUFFER_DIM {
+            return Err(DisplayError::Protocol(format!(
+                "Invalid or oversized framebuffer dimensions: {width}x{height}"
+            )));
+        }
 
         let pixel_format = PixelFormat {
             bits_per_pixel: init_header[4],
@@ -144,10 +159,13 @@ impl RfbClient {
         stream.write_all(&set_encodings_msg)?;
         stream.flush()?;
 
-        // Short timeout for non-blocking-style frame polling
-        stream.set_read_timeout(Some(Duration::from_millis(8)))?;
+        // Short timeout for responsive non-blocking frame polling
+        stream.set_read_timeout(Some(Duration::from_millis(2)))?;
 
-        let buffer_size = (width as usize) * (height as usize) * 4;
+        let buffer_size = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|px| px.checked_mul(4))
+            .ok_or_else(|| DisplayError::Protocol("Framebuffer size overflow".to_string()))?;
         let mut client = Self {
             stream: Some(stream),
             width,
@@ -156,10 +174,13 @@ impl RfbClient {
             server_name,
             framebuffer: vec![0u8; buffer_size],
             is_connected: true,
+            server_clipboard: None,
+            generation: 1,
+            update_pending: false,
         };
 
         // Request initial full framebuffer
-        let _ = client.request_frame(false);
+        client.request_frame(false)?;
         Ok(client)
     }
 
@@ -177,13 +198,15 @@ impl RfbClient {
 
         match result {
             Ok(()) => Ok(rects_decoded),
-            Err(DisplayError::Io(e))
-                if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
-            {
-                Ok(rects_decoded)
+            Err(e) => {
+                self.disconnect();
+                Err(e)
             }
-            Err(e) => Err(e),
         }
+    }
+
+    pub fn peer_addr(&self) -> Option<std::net::SocketAddr> {
+        self.stream.as_ref()?.peer_addr().ok()
     }
 
     fn poll_updates_inner(
@@ -206,10 +229,13 @@ impl RfbClient {
             // Temporarily raise timeout while reading the rest of an in-flight message
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
             let res = match msg_type[0] {
-                0 => self.handle_framebuffer_update(stream, rects_decoded),
+                0 => {
+                    self.update_pending = false;
+                    self.handle_framebuffer_update(stream, rects_decoded)
+                }
                 1 => Self::skip_colour_map_entries(stream),
                 2 => Ok(()), // Bell (1 byte total)
-                3 => Self::skip_server_cut_text(stream),
+                3 => self.handle_server_cut_text(stream),
                 other => Err(DisplayError::Protocol(format!(
                     "Unsupported RFB server message type: {other}"
                 ))),
@@ -242,7 +268,15 @@ impl RfbClient {
             match encoding {
                 0 => {
                     // Raw encoding
-                    let byte_len = (rw as usize) * (rh as usize) * bpp_bytes;
+                    let byte_len = (rw as usize)
+                        .checked_mul(rh as usize)
+                        .and_then(|px| px.checked_mul(bpp_bytes))
+                        .ok_or_else(|| DisplayError::Protocol("Raw rect size overflow".to_string()))?;
+                    if byte_len > 64 * 1024 * 1024 {
+                        return Err(DisplayError::Protocol(format!(
+                            "Oversized Raw rectangle: {byte_len} bytes"
+                        )));
+                    }
                     let mut raw_buf = vec![0u8; byte_len];
                     stream.read_exact(&mut raw_buf)?;
                     self.decode_raw_rect(rx, ry, rw, rh, &raw_buf);
@@ -259,12 +293,19 @@ impl RfbClient {
                 }
                 -223 => {
                     // DesktopSize pseudo-encoding
-                    if rw > 0 && rh > 0 {
-                        self.width = rw;
-                        self.height = rh;
-                        self.framebuffer
-                            .resize((rw as usize) * (rh as usize) * 4, 0xff);
+                    if rw == 0 || rh == 0 || rw > MAX_FRAMEBUFFER_DIM || rh > MAX_FRAMEBUFFER_DIM {
+                        return Err(DisplayError::Protocol(format!(
+                            "Invalid DesktopSize dimensions: {rw}x{rh}"
+                        )));
                     }
+                    let new_len = (rw as usize)
+                        .checked_mul(rh as usize)
+                        .and_then(|px| px.checked_mul(4))
+                        .ok_or_else(|| DisplayError::Protocol("DesktopSize overflow".to_string()))?;
+                    self.width = rw;
+                    self.height = rh;
+                    self.framebuffer.resize(new_len, 0xff);
+                    self.generation = self.generation.wrapping_add(1);
                 }
                 other => {
                     return Err(DisplayError::Protocol(format!(
@@ -285,18 +326,65 @@ impl RfbClient {
         Ok(())
     }
 
-    fn skip_server_cut_text(stream: &mut TcpStream) -> Result<(), DisplayError> {
+    fn handle_server_cut_text(&mut self, stream: &mut TcpStream) -> Result<(), DisplayError> {
         let mut hdr = [0u8; 7]; // padding(3), length(4)
         stream.read_exact(&mut hdr)?;
         let len = u32::from_be_bytes([hdr[3], hdr[4], hdr[5], hdr[6]]) as usize;
-        let mut discard = vec![0u8; len.min(1024 * 1024)];
-        stream.read_exact(&mut discard)?;
+        if len > MAX_SERVER_CUT_BYTES {
+            return Err(DisplayError::Protocol(format!(
+                "Oversized ServerCutText payload: {len} bytes"
+            )));
+        }
+        let mut buf = vec![0u8; len];
+        stream.read_exact(&mut buf)?;
+        self.server_clipboard = Some(String::from_utf8_lossy(&buf).into_owned());
         Ok(())
     }
 
     fn decode_raw_rect(&mut self, rx: u16, ry: u16, rw: u16, rh: u16, raw: &[u8]) {
+        self.generation = self.generation.wrapping_add(1);
         let bpp = self.pixel_format.bits_per_pixel;
         let bytes_per_pixel = (bpp / 8).max(1) as usize;
+
+        // Fast path: 32bpp 8-8-8 little-endian (Xvnc default) -> direct row-by-row write, zero heap alloc, zero divisions.
+        if bytes_per_pixel == 4
+            && self.pixel_format.big_endian_flag == 0
+            && self.pixel_format.red_max == 255
+            && self.pixel_format.green_max == 255
+            && self.pixel_format.blue_max == 255
+            && self.pixel_format.red_shift % 8 == 0
+            && self.pixel_format.green_shift % 8 == 0
+            && self.pixel_format.blue_shift % 8 == 0
+        {
+            let r_idx = (self.pixel_format.red_shift / 8) as usize;
+            let g_idx = (self.pixel_format.green_shift / 8) as usize;
+            let b_idx = (self.pixel_format.blue_shift / 8) as usize;
+            if r_idx < 4 && g_idx < 4 && b_idx < 4 {
+                let stride = (self.width as usize) * 4;
+                let row_bytes = (rw as usize) * 4;
+                for row in 0..rh as usize {
+                    let y = (ry as usize) + row;
+                    if y >= self.height as usize {
+                        break;
+                    }
+                    let dst_start = y * stride + (rx as usize) * 4;
+                    let src_start = row * row_bytes;
+                    if dst_start + row_bytes > self.framebuffer.len() || src_start + row_bytes > raw.len() {
+                        break;
+                    }
+                    let dst_row = &mut self.framebuffer[dst_start..dst_start + row_bytes];
+                    let src_row = &raw[src_start..src_start + row_bytes];
+                    for (d, s) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
+                        d[0] = s[r_idx];
+                        d[1] = s[g_idx];
+                        d[2] = s[b_idx];
+                        d[3] = 0xff;
+                    }
+                }
+                return;
+            }
+        }
+
         let mut rgba = Vec::with_capacity((rw as usize) * (rh as usize) * 4);
 
         for chunk in raw.chunks_exact(bytes_per_pixel) {
@@ -351,6 +439,7 @@ impl RfbClient {
     }
 
     fn copy_rect(&mut self, sx: u16, sy: u16, dx: u16, dy: u16, w: u16, h: u16) {
+        self.generation = self.generation.wrapping_add(1);
         let stride = (self.width as usize) * 4;
         let mut temp = vec![0u8; (w as usize) * (h as usize) * 4];
         for row in 0..h {
@@ -444,7 +533,30 @@ impl RfbClient {
         }
     }
 
+    pub fn send_clipboard(&mut self, text: &str) -> Result<(), DisplayError> {
+        let bytes = text.as_bytes();
+        let capped_len = bytes.len().min(MAX_CLIPBOARD_BYTES);
+        let payload = &bytes[..capped_len];
+        if let Some(ref mut s) = self.stream {
+            let mut msg = Vec::with_capacity(8 + payload.len());
+            msg.push(ClientMessageType::ClientCutText as u8);
+            msg.extend_from_slice(&[0u8; 3]);
+            msg.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            msg.extend_from_slice(payload);
+            s.write_all(&msg)?;
+            s.flush()?;
+        }
+        Ok(())
+    }
+
+    pub fn take_server_clipboard(&mut self) -> Option<String> {
+        self.server_clipboard.take()
+    }
+
     pub fn request_frame(&mut self, incremental: bool) -> Result<(), DisplayError> {
+        if incremental && self.update_pending {
+            return Ok(());
+        }
         let req = FramebufferUpdateRequest {
             incremental: if incremental { 1 } else { 0 },
             x: 0,
@@ -455,6 +567,7 @@ impl RfbClient {
         if let Some(ref mut s) = self.stream {
             s.write_all(&req.to_bytes())?;
             s.flush()?;
+            self.update_pending = true;
         }
         Ok(())
     }
@@ -464,6 +577,7 @@ impl RfbClient {
             let _ = s.shutdown(std::net::Shutdown::Both);
         }
         self.is_connected = false;
+        self.update_pending = false;
     }
 }
 
@@ -478,6 +592,30 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn coalesces_incremental_requests_until_an_update_arrives() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        let mut client = RfbClient::new_offline(4, 4);
+        client.stream = Some(stream);
+        client.is_connected = true;
+        client.request_frame(false).unwrap();
+        client.request_frame(true).unwrap();
+        let mut data = [0; 10];
+        server.read_exact(&mut data).unwrap();
+        assert_eq!(&data[..2], &[3, 0]);
+        assert!(server.read(&mut data).is_err());
+
+        server.write_all(&[0, 0, 0, 0]).unwrap(); // An empty FramebufferUpdate.
+        assert_eq!(client.poll_updates().unwrap(), 0);
+        client.request_frame(true).unwrap();
+        server.read_exact(&mut data).unwrap();
+        assert_eq!(&data[..2], &[3, 1]);
+    }
 
     #[test]
     fn test_live_rfb_handshake_and_raw_rect_decode() {
@@ -548,6 +686,109 @@ mod tests {
         let decoded = client.poll_updates().expect("poll updates");
         assert_eq!(decoded, 1);
         assert_eq!(&client.framebuffer[0..4], &[0x11, 0x22, 0x33, 0xff]);
+        server.join().unwrap();
+        assert!(client.poll_updates().is_err());
+        assert!(!client.is_connected);
+    }
+
+    #[test]
+    fn test_rejects_oversized_framebuffer() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            sock.write_all(RFB_VERSION_3_8).unwrap();
+            let mut buf = [0u8; 12];
+            sock.read_exact(&mut buf).unwrap();
+            sock.write_all(&[1, 1]).unwrap();
+            let mut c = [0u8; 1];
+            sock.read_exact(&mut c).unwrap();
+            sock.write_all(&0u32.to_be_bytes()).unwrap();
+            sock.read_exact(&mut c).unwrap();
+            let mut init = Vec::new();
+            init.extend_from_slice(&16384u16.to_be_bytes());
+            init.extend_from_slice(&16384u16.to_be_bytes());
+            init.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
+            init.extend_from_slice(&4u32.to_be_bytes());
+            init.extend_from_slice(b"Huge");
+            sock.write_all(&init).unwrap();
+        });
+        let err = RfbClient::connect("127.0.0.1", port).err().unwrap();
+        assert!(err.to_string().contains("Invalid or oversized"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn test_rejects_unsupported_security_type() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            sock.write_all(RFB_VERSION_3_8).unwrap();
+            let mut buf = [0u8; 12];
+            sock.read_exact(&mut buf).unwrap();
+            sock.write_all(&[1, 19]).unwrap(); // VeNCrypt only
+        });
+        let err = RfbClient::connect("127.0.0.1", port).err().unwrap();
+        assert!(err.to_string().contains("None"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn test_clipboard_roundtrip_and_desktop_size_resize() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            sock.write_all(RFB_VERSION_3_8).unwrap();
+            let mut v = [0u8; 12];
+            sock.read_exact(&mut v).unwrap();
+            sock.write_all(&[1, 1]).unwrap();
+            let mut c = [0u8; 1];
+            sock.read_exact(&mut c).unwrap();
+            sock.write_all(&0u32.to_be_bytes()).unwrap();
+            sock.read_exact(&mut c).unwrap();
+            let mut init = Vec::new();
+            init.extend_from_slice(&8u16.to_be_bytes());
+            init.extend_from_slice(&8u16.to_be_bytes());
+            init.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
+            init.extend_from_slice(&4u32.to_be_bytes());
+            init.extend_from_slice(b"Clip");
+            sock.write_all(&init).unwrap();
+            let mut req = [0u8; 26];
+            sock.read_exact(&mut req).unwrap();
+
+            // Send ServerCutText ("hello") + DesktopSize (16x12)
+            let mut msg = vec![3u8, 0, 0, 0];
+            msg.extend_from_slice(&5u32.to_be_bytes());
+            msg.extend_from_slice(b"hello");
+            msg.extend_from_slice(&[0u8, 0u8]);
+            msg.extend_from_slice(&1u16.to_be_bytes());
+            msg.extend_from_slice(&0u16.to_be_bytes());
+            msg.extend_from_slice(&0u16.to_be_bytes());
+            msg.extend_from_slice(&16u16.to_be_bytes());
+            msg.extend_from_slice(&12u16.to_be_bytes());
+            msg.extend_from_slice(&(-223i32).to_be_bytes());
+            sock.write_all(&msg).unwrap();
+            sock.flush().unwrap();
+
+            // Expect ClientCutText ("world")
+            let mut cut_hdr = [0u8; 8];
+            sock.read_exact(&mut cut_hdr).unwrap();
+            assert_eq!(cut_hdr[0], 6);
+            let cut_len = u32::from_be_bytes([cut_hdr[4], cut_hdr[5], cut_hdr[6], cut_hdr[7]]) as usize;
+            let mut cut_body = vec![0u8; cut_len];
+            sock.read_exact(&mut cut_body).unwrap();
+            assert_eq!(&cut_body, b"world");
+        });
+
+        let mut client = RfbClient::connect("127.0.0.1", port).unwrap();
+        thread::sleep(Duration::from_millis(20));
+        client.poll_updates().unwrap();
+        assert_eq!(client.take_server_clipboard().as_deref(), Some("hello"));
+        assert_eq!((client.width, client.height), (16, 12));
+        assert_eq!(client.framebuffer.len(), 16 * 12 * 4);
+        client.send_clipboard("world").unwrap();
         server.join().unwrap();
     }
 }

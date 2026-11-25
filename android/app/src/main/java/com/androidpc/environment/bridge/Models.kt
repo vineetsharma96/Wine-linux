@@ -33,6 +33,9 @@ data class SystemDiagnosticsData(
     val rootless_ptrace_supported: Boolean,
     val seccomp_restricted: Boolean,
     val proot_ready: Boolean,
+    val proot_version: String? = null,
+    val android_release: String? = null,
+    val last_guest_check_epoch_ms: Long? = null,
     val reports: List<SubsystemHealthData> = emptyList()
 )
 
@@ -48,6 +51,8 @@ data class EngineConfigData(
     val runtime_artifacts_dir: String,
     val temporary_dir: String,
     val native_lib_dir: String? = null,
+    val trusted_rootfs_key_hex: String? = null,
+    val app_version_code: Int,
     val debug_mode: Boolean,
     val log_level: String,
     val max_concurrent_processes: Int
@@ -57,7 +62,8 @@ data class DisplayEndpointData(
     val display_type: String = "Xvnc",
     val address: String = "127.0.0.1",
     val port: Int = 5901,
-    val auth_required: Boolean = false
+    val auth_required: Boolean = false,
+    val session_id: String? = null
 )
 
 data class ArtifactMetadataData(
@@ -72,10 +78,45 @@ data class ArtifactMetadataData(
 
 data class EnvironmentConfigData(
     val id: String = "",
+    val display_name: String? = null,
+    val last_started_at_epoch_ms: Long? = null,
+    val runtime_version: String? = null,
     val distribution: String = "",
+    val version: String = "",
+    val architecture: String = "",
     val rootfs_directory: String = "",
     val default_username: String = "user",
     val memory_limit_mb: Long? = null
+)
+
+data class EnvironmentMetricsData(
+    val processes: Int,
+    val terminal_sessions: Int,
+    val memory_rss_bytes: Long? = null,
+    val cpu_time_ms: Long? = null,
+    val seconds_since_launch: Long? = null
+)
+
+data class BackupData(
+    val id: String,
+    val created_at_epoch_ms: Long,
+    val size_bytes: Long,
+    val source_name: String,
+    val distribution: String
+)
+
+data class BackupOperationData(
+    val backups: List<BackupData>? = null,
+    val environment_id: String? = null,
+    val error: String? = null
+)
+
+data class PackageOperationData(
+    val exit_code: Int? = null,
+    val cancelled: Boolean = false,
+    val stdout: String? = null,
+    val stderr: String? = null,
+    val error: String? = null
 )
 
 data class WineConfigData(

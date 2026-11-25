@@ -96,3 +96,15 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 }
+/// Verifies the original manifest bytes against the release key embedded in the app.
+pub fn verify_ed25519_manifest(manifest: &[u8], signature: &[u8], public_key_hex: &str) -> bool {
+    use ed25519_dalek::{Signature, VerifyingKey};
+    let mut public_key = [0; 32];
+    if hex::decode_to_slice(public_key_hex, &mut public_key).is_err() {
+        return false;
+    }
+    let (Ok(key), Ok(signature)) = (VerifyingKey::from_bytes(&public_key), Signature::from_slice(signature)) else {
+        return false;
+    };
+    key.verify_strict(manifest, &signature).is_ok()
+}

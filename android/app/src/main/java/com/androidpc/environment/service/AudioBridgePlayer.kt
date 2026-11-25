@@ -22,6 +22,15 @@ object AudioBridgePlayer {
 
     private var playbackJob: Job? = null
     private var audioTrack: AudioTrack? = null
+    @Volatile var isMuted: Boolean = false
+        private set
+
+    fun setMuted(muted: Boolean) {
+        isMuted = muted
+        try {
+            audioTrack?.setVolume(if (muted) 0.0f else 1.0f)
+        } catch (_: Exception) {}
+    }
 
     val isActive: Boolean
         get() = playbackJob?.isActive == true

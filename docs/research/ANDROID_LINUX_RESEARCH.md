@@ -1,0 +1,16 @@
+# Android & Linux Runtime Research
+
+## Stage 3.1 guest package sources
+
+**Confirmed.** The original `ubuntu.sources` extracted from the SHA-256-verified Ubuntu Base 26.04.1 ARM64 archive pointed to `archive.ubuntu.com` and `security.ubuntu.com`. The already-installed tablet guest separately used HTTP Ubuntu Ports. The fresh guest reported `VERSION_ID=26.04`, `VERSION_CODENAME=resolute`, and package architecture `arm64`. Canonical assigns non-x86 architectures to the Ports archive. APT source entries carry independent suite, component, and keyring fields. [Canonical archive mapping](https://documentation.ubuntu.com/chisel/en/latest/reference/chisel-releases/) · [Ubuntu APT source formats](https://manpages.ubuntu.com/manpages/resolute/man5/sources.list.5.html)
+
+Install and Repair check `dpkg --print-architecture` and `/etc/os-release` in the guest. The Ubuntu ARM64 policy migrates recognized official URLs in `etc/apt/sources.list` and `etc/apt/sources.list.d/ubuntu.sources` to HTTPS Ports. Each changed file is replaced atomically after preserving the first original as an APT-ignored `.androidpc-original` file. An administrator can restore a missing or malformed source from that copy and rerun Repair. Ubuntu Base receives a bootstrap CA bundle from Android's system roots when the guest bundle is missing. The guest can install and maintain `ca-certificates` afterwards. [APT HTTPS transport](https://manpages.ubuntu.com/manpages/resolute/man1/apt-transport-https.1.html) · [Android Conscrypt trust documentation](https://source.android.com/docs/core/ota/modular-system/conscrypt)
+
+**TLS experiment.** Ubuntu Base omitted both a CA bundle and the standard OpenSSL configuration directory. Seeding the bundle alone left APT's HTTPS certificate verification failing. An explicit `Acquire::https::CAInfo` pointing to the seeded bundle fetched the signed indexes, including `resolute-security`. The app configures that option for `ports.ubuntu.com` while keeping TLS peer verification and Ubuntu archive signature verification enabled.
+
+## Confirmed Findings (Verified on Xiaomi Pad 7, Android 16, Kernel `6.1.138`)
+1. **SELinux `app_data_file` Execute Restriction**: Binaries unpacked to `files/` may be blocked from `execve` on API 29+; `libproot.so`, `libproot_loader.so`, and `libproot_loader32.so` must live in `jniLibs/arm64-v8a/` (`extractNativeLibs` / `useLegacyPackaging = true`).
+2. **Hardlink (`link(2)`) Restriction**: Android `app_data_file` denies `link(2)` during `dpkg --unpack` unless PRoot runs with `--link2symlink`.
+3. **`AF_UNIX` `sun_path` 108-Byte Limit**: Deep `files/environments/<distro>/<uuid>/rootfs/tmp/...` paths exceed 107 bytes, causing `Xvnc` and `dbus-daemon` `bind()` to fail with `EINVAL`. Binding `<base_data_dir>/dtmp:/tmp` keeps socket paths under 65 bytes.
+4. **Ubuntu 26.04 `glycin` + `bwrap`**: `gdk-pixbuf` 2.44.5 delegates image decoding to `glycin-loaders` via `bwrap --unshare-all`, which fails in unprivileged PRoot (no `CLONE_NEWUSER`). Prepending a `bwrap` shim in `/usr/local/lib/androidpc-bin` for `/usr/libexec/glycin-loaders/*` resolves GTK/XFCE icon loading.
+5. **Android 11+ Package Visibility**: Detecting `com.termux.x11` on `targetSdk = 35` requires `<queries><package android:name="com.termux.x11" /></queries>` in `AndroidManifest.xml`.

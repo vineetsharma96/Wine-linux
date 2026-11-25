@@ -1,5 +1,5 @@
-use std::fs::File;
-use std::io::Read;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek};
 use std::path::Path;
 use flate2::read::GzDecoder;
 use tar::Archive;
@@ -19,12 +19,20 @@ impl ArchiveExtractor {
 
     pub fn extract_tar_xz(archive_path: &Path, destination_dir: &Path) -> Result<u64, FilesystemError> {
         std::fs::create_dir_all(destination_dir)?;
-        let file = File::open(archive_path)?;
-        let mut buf_reader = std::io::BufReader::new(file);
-        let mut decompressed = Vec::new();
-        lzma_rs::xz_decompress(&mut buf_reader, &mut decompressed)
-            .map_err(|e| FilesystemError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())))?;
-        Self::extract_tar_stream(std::io::Cursor::new(decompressed), destination_dir)
+        let scratch_path = destination_dir.with_extension("tar.tmp");
+        let mut decoded = OpenOptions::new().create_new(true).read(true).write(true).open(&scratch_path)?;
+        let result = (|| {
+            let mut source = std::io::BufReader::new(File::open(archive_path)?);
+            lzma_rs::xz_decompress(&mut source, &mut decoded)
+                .map_err(|error| FilesystemError::InvalidArchive(error.to_string()))?;
+            decoded.rewind()?;
+            Self::extract_tar_stream(&mut decoded, destination_dir)
+        })();
+        drop(decoded);
+        let cleanup = std::fs::remove_file(scratch_path);
+        let entries = result?;
+        cleanup?;
+        Ok(entries)
     }
 
     pub fn extract_tar(archive_path: &Path, destination_dir: &Path) -> Result<u64, FilesystemError> {
@@ -41,35 +49,36 @@ impl ArchiveExtractor {
             let mut entry = entry_result?;
             let path = entry.path()?.to_path_buf();
 
-            // Validate Zip-Slip defense
             let dest_file_path = PathSecurity::sanitize_and_resolve(destination_dir, &path)?;
-
-            // Ensure parent directory exists
-            if let Some(parent) = dest_file_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            // Unpack entry
-            entry.unpack(&dest_file_path)?;
-            // Unpack entry with Android-safe hardlink fallback (SELinux blocks link() in app sandboxes)
-            if entry.header().entry_type() == tar::EntryType::Link {
-                if let Err(err) = entry.unpack(&dest_file_path) {
-                    if err.kind() == std::io::ErrorKind::PermissionDenied {
-                        if let Ok(Some(link_target)) = entry.link_name() {
-                            let resolved_target = PathSecurity::sanitize_and_resolve(
-                                destination_dir,
-                                link_target.as_ref(),
-                            )?;
-                            if resolved_target.exists() {
-                                std::fs::copy(&resolved_target, &dest_file_path)?;
-                            }
-                        }
-                    } else {
-                        return Err(err.into());
-                    }
+            match entry.unpack_in(destination_dir) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(FilesystemError::InvalidArchive(format!(
+                        "Cannot extract {}", path.display()
+                    )));
                 }
-            } else {
-                entry.unpack(&dest_file_path)?;
+                Err(err) if cfg!(target_os = "android")
+                    && entry.header().entry_type().is_hard_link()
+                    && err.kind() == std::io::ErrorKind::PermissionDenied =>
+                {
+                    let link = entry.link_name()?.ok_or_else(|| {
+                        FilesystemError::InvalidArchive("Hardlink has no target".into())
+                    })?;
+                    let source = PathSecurity::sanitize_and_resolve(destination_dir, &link)?;
+                    let root = destination_dir.canonicalize()?;
+                    let source = source.canonicalize()?;
+                    let parent = dest_file_path.parent().unwrap_or(destination_dir).canonicalize()?;
+                    if !source.starts_with(&root) || !parent.starts_with(&root) || !source.is_file() {
+                        return Err(FilesystemError::InvalidArchive("Unsafe hardlink target".into()));
+                    }
+                    let mut target = std::fs::OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(&dest_file_path)?;
+                    std::io::copy(&mut File::open(&source)?, &mut target)?;
+                    target.set_permissions(source.metadata()?.permissions())?;
+                }
+                Err(err) => return Err(err.into()),
             }
             entries_extracted += 1;
         }
@@ -85,19 +94,16 @@ impl ArchiveExtractor {
         if destination_dir.join("bin").exists() || destination_dir.join("usr").exists() {
             return Ok(());
         }
-        let entries: Vec<_> = std::fs::read_dir(destination_dir)?
-            .filter_map(|e| e.ok())
-            .collect();
-        if entries.len() == 1 && entries[0].path().is_dir() {
+        let entries = std::fs::read_dir(destination_dir)?.collect::<Result<Vec<_>, _>>()?;
+        if entries.len() == 1 && entries[0].file_type()?.is_dir() {
             let nested = entries[0].path();
             if nested.join("bin").exists() || nested.join("usr").exists() {
-                for child in std::fs::read_dir(&nested)?.flatten() {
+                for child in std::fs::read_dir(&nested)? {
+                    let child = child?;
                     let target = destination_dir.join(child.file_name());
-                    if !target.exists() {
-                        let _ = std::fs::rename(child.path(), target);
-                    }
+                    std::fs::rename(child.path(), target)?;
                 }
-                let _ = std::fs::remove_dir_all(&nested);
+                std::fs::remove_dir(&nested)?;
             }
         }
         Ok(())

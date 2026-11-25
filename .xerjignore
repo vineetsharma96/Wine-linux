@@ -1,0 +1,30 @@
+# XERJ Autoindex Ignore Rules for Android PC Environment
+# Build outputs & caches
+target/
+rust/target/
+build/
+android/build/
+android/app/build/
+.gradle/
+android/.gradle/
+.cxx/
+android/app/.cxx/
+.playwright-mcp/
+
+# Prebuilt native binaries & rootfs assets (keep docs/scripts, skip binary blobs)
+runtime/proot/
+runtime/xvnc/
+assets/
+android/app/src/main/jniLibs/
+android/app/src/main/assets/
+android/app/src/release/assets/
+android/gradle/wrapper/gradle-wrapper.jar
+
+# Secrets, local properties, signing keys
+local.properties
+*.keystore
+*.jks
+*.pem
+*.key
+*.sig
+*.p12

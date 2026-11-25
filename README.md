@@ -2,7 +2,7 @@
 
 > **A serious, rootless Linux desktop computing runtime for Android, engineered in Rust and Kotlin.**
 
-Android PC Environment is an open-source, rootless computing environment capable of running complete desktop Linux distributions (Ubuntu, Debian) on modern Android devices, with a modular architecture prepared for Windows application compatibility (via Box64 and Wine) and full virtual machine virtualization (via QEMU) in upcoming phases.
+Android PC Environment runs Ubuntu and Debian ARM64 userspaces and interactive Linux shells inside an ordinary Android app. The Rust engine uses PRoot to run rootless guests. The repository also contains work on Linux desktop sessions, Wine/Box64 and QEMU. See [development status](DEVELOPMENT_STATUS.md) for the scope of device verification.
 
 ---
 
@@ -30,8 +30,8 @@ Android PC Environment is an open-source, rootless computing environment capable
 ┌──────────────────────────────▼──────────────────────────────┐
 │                   Linux Guest Userspace                     │
 │   • PRoot Rootless PTrace Virtualization                     │
-│   • Ubuntu 24.04 LTS / Debian 12 (ARM64 / aarch64)          │
-│   • XFCE 4 Desktop Environment + TigerVNC Server (Xvnc)     │
+│   • Ubuntu 26.04 LTS / Debian 13 (ARM64 / aarch64)           │
+│   • Linux PTY, with optional desktop integration code       │
 └─────────────────────────────────────────────────────────────┘
 ```
 

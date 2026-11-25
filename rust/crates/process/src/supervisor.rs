@@ -6,6 +6,7 @@ use tracing::{error, info};
 use androidpc_runtime_api::{
     ProcessCommand, ProcessId, ProcessInfo, ProcessSupervisor, RuntimeError, Signal,
 };
+#[cfg(unix)]
 use crate::signal::SignalTranslator;
 
 pub struct ManagedProcess {
@@ -31,12 +32,42 @@ impl DefaultProcessSupervisor {
             processes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    pub fn terminate_all(&self) -> Result<(), RuntimeError> {
+        let mut processes = self.processes.write()
+            .map_err(|_| RuntimeError::SupervisorError("Process lock poisoned".into()))?;
+        for process in processes.values_mut() {
+            if let Some(child) = process.child.as_mut() {
+                if child.try_wait()?.is_none() {
+                    #[cfg(unix)]
+                    unsafe { libc::kill(child.id() as i32, libc::SIGTERM); }
+                    #[cfg(not(unix))]
+                    child.kill()?;
+                }
+            }
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(400);
+        for process in processes.values_mut() {
+            if let Some(child) = process.child.as_mut() {
+                while child.try_wait()?.is_none() {
+                    if std::time::Instant::now() >= deadline {
+                        child.kill()?;
+                        child.wait()?;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+        processes.clear();
+        Ok(())
+    }
 }
 
 impl ProcessSupervisor for DefaultProcessSupervisor {
     fn spawn_process(&self, command: &ProcessCommand) -> Result<ProcessId, RuntimeError> {
         let mut cmd = Command::new(&command.program);
-        cmd.args(&command.args);
+        cmd.args(&command.args).env_clear();
 
         for (k, v) in &command.env {
             cmd.env(k, v);
@@ -122,12 +153,13 @@ impl ProcessSupervisor for DefaultProcessSupervisor {
 
     fn list_processes(&self) -> Vec<ProcessInfo> {
         let mut list = Vec::new();
-        if let Ok(map) = self.processes.read() {
-            for (pid, p) in map.iter() {
+        if let Ok(mut map) = self.processes.write() {
+            for (pid, p) in map.iter_mut() {
+                let running = p.child.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None)));
                 list.push(ProcessInfo {
                     pid: *pid,
                     command: p.command.clone(),
-                    running: true,
+                    running,
                     memory_rss_bytes: 0,
                 });
             }

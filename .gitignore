@@ -11,6 +11,7 @@ android/app/build/
 android/build/
 build/
 local.properties
+android/app/src/release/assets/rootfs/
 .cxx/
 android/app/.cxx/
 

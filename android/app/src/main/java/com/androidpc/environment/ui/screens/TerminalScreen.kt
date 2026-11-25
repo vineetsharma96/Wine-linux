@@ -13,58 +13,81 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import com.androidpc.environment.bridge.NativeBridge
 import com.androidpc.environment.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import java.util.UUID
 
 @Composable
 fun TerminalScreen(
     envId: String,
+    defaultShell: String = "/bin/bash",
     onBack: () -> Unit
 ) {
-    val sessionId = remember { "term-$envId" }
-    var terminalOutput by remember { mutableStateOf("Allocating Bionic Unix PTY session...\n") }
+    val sessionId = remember(envId) { "term-" + UUID.randomUUID() }
+    var terminalOutput by remember { mutableStateOf("") }
     var commandInput by remember { mutableStateOf("") }
     var ptyFd by remember { mutableIntStateOf(-1) }
+    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
+    val density = LocalDensity.current
+    val glyphSize = remember(density) {
+        android.graphics.Paint().apply {
+            typeface = android.graphics.Typeface.MONOSPACE
+            textSize = with(density) { 12.sp.toPx() }
+        }.let { paint -> paint.measureText("M") to paint.fontSpacing }
+    }
     val scrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
 
-    DisposableEffect(sessionId) {
-        onDispose {
-            scope.launch {
-                NativeBridge.closeTerminal(sessionId)
-            }
+    LaunchedEffect(ptyFd, viewportSize, glyphSize) {
+        if (ptyFd >= 0 && viewportSize.width > 0 && viewportSize.height > 0) {
+            val padding = with(density) { 24.dp.toPx() }
+            val cols = ((viewportSize.width - padding) / glyphSize.first).toInt().coerceIn(1, 512)
+            val rows = ((viewportSize.height - padding) / glyphSize.second).toInt().coerceIn(1, 512)
+            NativeBridge.resizeTerminal(sessionId, cols, rows)
         }
     }
 
     LaunchedEffect(sessionId) {
-        val createRes = NativeBridge.createTerminalForEnv(sessionId, envId, 80, 24)
-        createRes.onSuccess { fd ->
-            ptyFd = fd
-            terminalOutput += "PTY shell attached (master_fd=$fd, env=$envId).\n"
-            NativeBridge.writeTerminal(sessionId, "uname -a\n".toByteArray())
-        }.onFailure { err ->
-            terminalOutput += "Failed to open PTY: ${err.message}\n"
-        }
-
-        while (isActive) {
-            if (ptyFd >= 0) {
-                val readRes = NativeBridge.readTerminal(sessionId, 4096)
-                readRes.onSuccess { bytes ->
-                    if (bytes.isNotEmpty()) {
-                        val chunk = String(bytes, Charsets.UTF_8)
-                        terminalOutput = (terminalOutput + chunk).takeLast(16384)
+        try {
+            val createRes = NativeBridge.createTerminalForEnv(sessionId, envId, 80, 24, defaultShell)
+            ptyFd = createRes.getOrElse { err ->
+                terminalOutput = "Failed to open Linux terminal: ${err.message}\n"
+                return@LaunchedEffect
+            }
+            while (isActive) {
+                val read = NativeBridge.readTerminal(sessionId, 4096)
+                if (read.isFailure) {
+                    terminalOutput += "\nTerminal read failed: ${read.exceptionOrNull()?.message}\n"
+                    break
+                }
+                val bytes = read.getOrThrow()
+                if (bytes.isNotEmpty()) {
+                    terminalOutput = (terminalOutput + bytes.decodeToString()).takeLast(16384)
+                } else {
+                    val exit = NativeBridge.terminalExitStatus(sessionId)
+                    if (exit != -1) {
+                        terminalOutput += if (exit >= 0) "\nShell exited with status $exit\n" else "\nTerminal stopped\n"
+                        break
                     }
                 }
+                delay(60)
             }
-            delay(60)
+        } finally {
+            ptyFd = -1
+            withContext(NonCancellable) { NativeBridge.closeTerminal(sessionId) }
         }
     }
 
@@ -122,6 +145,7 @@ fun TerminalScreen(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                .onSizeChanged { viewportSize = it }
                 .background(SurfaceDark, RoundedCornerShape(10.dp))
                 .border(1.dp, CardBorder, RoundedCornerShape(10.dp))
                 .padding(12.dp)

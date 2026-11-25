@@ -1,11 +1,15 @@
 pub mod diagnostics;
+pub mod backups;
+pub mod desktop;
 pub mod distributions;
+pub mod environment_metrics;
 pub mod health;
+pub mod packages;
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use thiserror::Error;
 use tracing::info;
@@ -40,6 +44,9 @@ pub enum CoreError {
 
     #[error("Filesystem error: {0}")]
     Filesystem(#[from] androidpc_filesystem::FilesystemError),
+
+    #[error("Runtime file operation failed: {0}")]
+    Io(#[from] std::io::Error),
 
     #[error("Downloader error: {0}")]
     Downloader(#[from] androidpc_downloader::DownloaderError),
@@ -78,13 +85,24 @@ pub struct EngineCore {
     pub providers: RwLock<Vec<Box<dyn RuntimeProvider>>>,
     pub distributions: RwLock<Vec<Box<dyn LinuxDistribution>>>,
     pub display_backend: RwLock<Option<XvncDisplayBackend>>,
+    pub desktop_session: RwLock<Option<desktop::DesktopSession>>,
+    desktop_exit: RwLock<Option<desktop::DesktopExit>>,
     pub terminal_sessions: RwLock<HashMap<String, DefaultTerminalSession>>,
     pub environments: RwLock<HashMap<String, ProotEnvironmentManager>>,
+    environment_install: Mutex<()>,
+    install_progress: Mutex<Option<InstallProgress>>,
+    package_jobs: Mutex<HashMap<String, Arc<packages::PackageJob>>>,
     pub rfb_client: RwLock<Option<androidpc_display::RfbClient>>,
     pub audio_sink: RwLock<AudioTcpSink>,
     pub wine_supervisor: Arc<WineProcessSupervisor>,
     pub vm_supervisor: QemuSupervisor,
     pub gpu_mode: RwLock<androidpc_display::GpuAccelerationMode>,
+}
+
+struct InstallProgress {
+    id: String,
+    state: EnvironmentState,
+    cancelled: bool,
 }
 
 impl EngineCore {
@@ -99,6 +117,8 @@ impl EngineCore {
             .unwrap_or(0);
 
         let storage = StorageManager::new(&config.base_data_dir);
+        #[cfg(target_os = "android")]
+        storage.clean_staging_on_startup();
         let proot_name = ProotRuntimeProvider::binary_name_for_arch(Architecture::host());
         let proot_bin = config.runtime_artifacts_dir.join(proot_name);
         let proot_provider = Box::new(ProotRuntimeProvider::new(proot_bin));
@@ -106,18 +126,40 @@ impl EngineCore {
             &config.base_data_dir,
             &config.runtime_artifacts_dir.join("qemu"),
         );
+        let artifacts = if let Some(key) = config.trusted_rootfs_key_hex.as_deref() {
+            let catalog = config.runtime_artifacts_dir.join("rootfs/catalog.json");
+            let signature = config.runtime_artifacts_dir.join("rootfs/catalog.sig");
+            if catalog.metadata()?.len() > 64 * 1024 || signature.metadata()?.len() != 64 {
+                return Err(CoreError::SubsystemFailure("Invalid rootfs manifest or signature length".into()));
+            }
+            DefaultArtifactProvider::from_signed_rootfs(
+                &std::fs::read(catalog)?,
+                &std::fs::read(signature)?,
+                key,
+                config.app_version_code,
+            )?
+        } else if cfg!(target_os = "android") && !config.debug_mode {
+            return Err(CoreError::SubsystemFailure("Release build requires a trusted rootfs catalog".into()));
+        } else {
+            DefaultArtifactProvider::new()
+        };
 
         let mut core = Self {
             config,
             start_time: Instant::now(),
             init_epoch_ms: AtomicU64::new(now_epoch_ms),
             storage,
-            artifacts: DefaultArtifactProvider::new(),
+            artifacts,
             providers: RwLock::new(vec![proot_provider]),
             distributions: RwLock::new(Vec::new()),
             display_backend: RwLock::new(None),
+            desktop_session: RwLock::new(None),
+            desktop_exit: RwLock::new(None),
             terminal_sessions: RwLock::new(HashMap::new()),
             environments: RwLock::new(HashMap::new()),
+            environment_install: Mutex::new(()),
+            install_progress: Mutex::new(None),
+            package_jobs: Mutex::new(HashMap::new()),
             rfb_client: RwLock::new(None),
             audio_sink: RwLock::new(AudioTcpSink::default()),
             wine_supervisor: Arc::new(WineProcessSupervisor::new()),
@@ -164,9 +206,18 @@ impl EngineCore {
         }
         let provider = self.resolve_proot_provider();
         if let Ok(mut guard) = self.environments.write() {
-            for raw in jsons {
+            for (directory, raw) in jsons {
                 if let Ok(env_cfg) = serde_json::from_str::<EnvironmentConfig>(&raw) {
                     let id = env_cfg.id.clone();
+                    let Ok(scoped) = self.storage.distribution_root(&env_cfg.distribution) else { continue };
+                    if env_cfg.validate().is_err()
+                        || (directory != scoped.join(&id) && directory != self.storage.environment_root(&id))
+                        || env_cfg.rootfs_directory != directory.join("rootfs")
+                        || !env_cfg.rootfs_directory.symlink_metadata().is_ok_and(|meta| meta.is_dir())
+                        || guard.contains_key(&id)
+                    {
+                        continue;
+                    }
                     let mgr = ProotEnvironmentManager::from_existing(env_cfg, provider.clone())
                         .with_artifacts_dir(&self.config.runtime_artifacts_dir);
                     guard.insert(id, mgr);
@@ -193,13 +244,21 @@ impl EngineCore {
     }
 
     pub fn collect_diagnostics(&self) -> SystemDiagnostics {
-        let active_procs = self
-            .environments
-            .read()
-            .map(|envs| envs.values().filter(|m| m.is_running()).count())
-            .unwrap_or(0)
-            + usize::from(self.is_display_running());
-        diagnostics::collect_system_diagnostics(&self.config, &self.run_health_check(), active_procs)
+        let (active, last_check) = self.environments.read().map(|envs| {
+            let active = envs.values().flat_map(|env| env.supervisor().list_processes())
+                .filter(|process| process.running).count();
+            let last_check = envs.values().filter_map(|env| env.config().verified_at_epoch_ms).max();
+            (active, last_check)
+        }).unwrap_or_default();
+        let terminals = self.terminal_sessions.write().map(|mut sessions| {
+            sessions.values_mut().filter_map(|session| session.exit_status().is_none().then_some(())).count()
+        }).unwrap_or(0);
+        let mut result = diagnostics::collect_system_diagnostics(
+            &self.config, &self.run_health_check(), active + terminals + usize::from(self.is_display_running()),
+        );
+        result.rootless_ptrace_supported = result.proot_ready && last_check.is_some();
+        result.last_guest_check_epoch_ms = last_check;
+        result
     }
 
     pub fn create_environment_config(&self, id: &str, distro: &str) -> EnvironmentConfig {
@@ -227,7 +286,11 @@ impl EngineCore {
     }
 
     pub fn extract_rootfs(&self, archive: &Path, dest: &Path) -> Result<u64, CoreError> {
-        let lower = archive.to_string_lossy().to_ascii_lowercase();
+        self.extract_rootfs_as(archive, dest, &archive.to_string_lossy())
+    }
+
+    fn extract_rootfs_as(&self, archive: &Path, dest: &Path, filename: &str) -> Result<u64, CoreError> {
+        let lower = filename.to_ascii_lowercase();
         let entries = if lower.ends_with(".gz") || lower.ends_with(".tgz") {
             ArchiveExtractor::extract_tar_gz(archive, dest)?
         } else if lower.ends_with(".xz") || lower.ends_with(".txz") {
@@ -236,6 +299,120 @@ impl EngineCore {
             ArchiveExtractor::extract_tar(archive, dest)?
         };
         Ok(entries)
+    }
+
+    pub fn install_environment(
+        &self,
+        id: &str,
+        distro: &str,
+        name: &str,
+        memory_limit_mb: u32,
+        archive: &Path,
+    ) -> Result<EnvironmentConfig, CoreError> {
+        if Architecture::host() != Architecture::Aarch64 || !matches!(distro, "ubuntu" | "debian") {
+            return Err(CoreError::SubsystemFailure("Select Ubuntu or Debian on an ARM64 device".into()));
+        }
+        EnvironmentConfig::validate_new_id(id)?;
+        let _install = self.environment_install.try_lock()
+            .map_err(|_| CoreError::SubsystemFailure("An environment install is already active".into()))?;
+        let meta = self.get_artifact_metadata(distro)
+            .ok_or_else(|| CoreError::SubsystemFailure("No matching rootfs artifact".into()))?;
+        let mut config = self.create_environment_config(id, distro);
+        config.display_name = Some(name.trim().to_owned());
+        config.memory_limit_mb = memory_limit_mb;
+        config.validate()?;
+        let destination = self.storage.distribution_root(distro)?.join(id);
+        config.rootfs_directory = destination.join("rootfs");
+        if self.environments.read().map_err(|_| CoreError::SubsystemFailure("Environment lock poisoned".into()))?.contains_key(id)
+            || ["ubuntu", "debian"].into_iter().filter_map(|distro| self.storage.distribution_root(distro).ok())
+                .any(|root| root.join(id).symlink_metadata().is_ok())
+            || self.storage.environment_root(id).symlink_metadata().is_ok()
+        {
+            return Err(CoreError::SubsystemFailure("Environment already exists".into()));
+        }
+        let staging = destination.with_file_name(format!(".install-{id}"));
+        match std::fs::remove_dir_all(&staging) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        let staging_rootfs = staging.join("rootfs");
+        let provider = self.resolve_proot_provider();
+        *self.install_progress.lock().map_err(|_| CoreError::SubsystemFailure("Install progress lock poisoned".into()))? =
+            Some(InstallProgress { id: id.to_string(), state: EnvironmentState::Verifying, cancelled: false });
+        let result = (|| {
+            if archive.metadata()?.len() != meta.size_bytes || !self.verify_archive(archive, &meta.sha256)? {
+                return Err(CoreError::SubsystemFailure("Rootfs archive size or SHA-256 does not match the catalog".into()));
+            }
+            self.install_checkpoint(EnvironmentState::Extracting)?;
+            std::fs::create_dir_all(&staging_rootfs)?;
+            self.extract_rootfs_as(archive, &staging_rootfs, &meta.filename)?;
+            self.install_checkpoint(EnvironmentState::Initializing)?;
+            let mut staged = config.clone();
+            staged.rootfs_directory = staging_rootfs;
+            let mut manager = ProotEnvironmentManager::new(staged, provider.clone())
+                .with_artifacts_dir(&self.config.runtime_artifacts_dir);
+            manager.initialize()?;
+            let expected_release = self.artifacts.expected_release(distro)
+                .ok_or_else(|| CoreError::SubsystemFailure("Missing guest release in artifact catalog".into()))?;
+            config.version = manager.verify_and_provision_guest(distro, expected_release)?;
+            config.verified_at_epoch_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .ok().map(|time| time.as_millis() as u64);
+            config.runtime_version = diagnostics::probe_proot_version(&self.config);
+
+            self.storage.save_config_at(&staging, &serde_json::to_vec_pretty(&config)?)?;
+            let mut progress = self.install_progress.lock()
+                .map_err(|_| CoreError::SubsystemFailure("Install progress lock poisoned".into()))?;
+            let active = progress.as_mut().ok_or_else(|| CoreError::SubsystemFailure("Missing install progress".into()))?;
+            if active.cancelled {
+                return Err(CoreError::SubsystemFailure("Installation cancelled".into()));
+            }
+            let mut environments = self.environments.write()
+                .map_err(|_| CoreError::SubsystemFailure("Environment lock poisoned".into()))?;
+            if environments.contains_key(id) || destination.symlink_metadata().is_ok() {
+                return Err(CoreError::SubsystemFailure("Environment already exists".into()));
+            }
+            std::fs::rename(&staging, &destination)?;
+            environments.insert(id.to_string(), ProotEnvironmentManager::from_existing(config.clone(), provider)
+                .with_artifacts_dir(&self.config.runtime_artifacts_dir));
+            active.state = EnvironmentState::Ready;
+            Ok(config)
+        })();
+        if result.is_err() {
+            if let Ok(mut progress) = self.install_progress.lock() {
+                if let Some(progress) = progress.as_mut() {
+                    progress.state = EnvironmentState::Failed;
+                }
+            }
+            if let Err(error) = std::fs::remove_dir_all(&staging) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!("Could not clean installation staging directory: {error}");
+                }
+            }
+        }
+        result
+    }
+
+    fn install_checkpoint(&self, state: EnvironmentState) -> Result<(), CoreError> {
+        let mut progress = self.install_progress.lock()
+            .map_err(|_| CoreError::SubsystemFailure("Install progress lock poisoned".into()))?;
+        let active = progress.as_mut().ok_or_else(|| CoreError::SubsystemFailure("Missing install progress".into()))?;
+        if active.cancelled {
+            return Err(CoreError::SubsystemFailure("Installation cancelled".into()));
+        }
+        active.state = state;
+        Ok(())
+    }
+
+    pub fn cancel_installation(&self, id: &str) -> bool {
+        let Ok(mut progress) = self.install_progress.lock() else { return false };
+        if let Some(active) = progress.as_mut() {
+            if active.id == id && matches!(active.state, EnvironmentState::Verifying | EnvironmentState::Extracting | EnvironmentState::Initializing) {
+                active.cancelled = true;
+                return true;
+            }
+        }
+        false
     }
 
     fn register_default_distributions(&mut self) {
@@ -298,57 +475,78 @@ impl EngineCore {
         cols: u16,
         rows: u16,
     ) -> Result<i32, CoreError> {
+        self.create_terminal_session_for_env_with_shell(id, env_id, cols, rows, None)
+    }
+
+    pub fn create_terminal_session_for_env_with_shell(
+        &self,
+        id: &str,
+        env_id: Option<&str>,
+        cols: u16,
+        rows: u16,
+        preferred_shell: Option<&str>,
+    ) -> Result<i32, CoreError> {
         let mut session = DefaultTerminalSession::new(id, cols, rows).map_err(CoreError::Runtime)?;
-
-        // Determine whether to attach a PRoot guest shell or host Android shell
-        let mut attached = false;
-        if let Some(eid) = env_id {
-            if let Ok(envs) = self.environments.read() {
-                if let Some(mgr) = envs.get(eid) {
-                    let rootfs = &mgr.config().rootfs_directory;
-                    let proot_bin = self.resolve_proot_provider();
-                    let guest_sh = if rootfs.join("bin/bash").exists() {
-                        Some(vec!["/bin/bash".to_string(), "-l".to_string()])
-                    } else if rootfs.join("bin/sh").exists() {
-                        Some(vec!["/bin/sh".to_string()])
-                    } else {
-                        None
-                    };
-                    if let Some(sh_cmd) = guest_sh {
-                        if proot_bin.proot_binary().exists() {
-                            let proot_args = proot_bin.build_proot_command(mgr.config(), &sh_cmd);
-                            let gpu_env = self.get_gpu_acceleration_mode().build_guest_env();
-                            let proot_env = mgr.build_guest_env(&gpu_env);
-                            let prog = proot_bin.proot_binary().to_string_lossy().to_string();
-                            let _ = session.spawn_shell(&prog, &proot_args, &proot_env, None);
-                            attached = true;
-                        }
-                    }
-                }
-            }
+        let mut environments = self.environments.write()
+            .map_err(|_| CoreError::SubsystemFailure("Environment lock poisoned".into()))?;
+        let mut sessions = self.terminal_sessions.write()
+            .map_err(|_| CoreError::SubsystemFailure("Terminal lock poisoned".into()))?;
+        if sessions.contains_key(id) || sessions.len() >= self.config.max_concurrent_processes {
+            return Err(CoreError::SubsystemFailure("Terminal already exists or session limit reached".into()));
         }
-
-        if !attached {
+        if let Some(env_id) = env_id {
+            self.ensure_no_package_operation(env_id)?;
+            let manager = environments.get_mut(env_id)
+                .ok_or_else(|| CoreError::SubsystemFailure(format!("Environment not installed: {env_id}")))?;
+            let rootfs = &manager.config().rootfs_directory;
+            let prefer_sh = matches!(preferred_shell, Some("/bin/sh"));
+            let shell = if prefer_sh && rootfs.join("bin/sh").exists() {
+                vec!["/bin/sh".to_string(), "-i".to_string()]
+            } else if rootfs.join("bin/bash").exists() {
+                vec!["/bin/bash".to_string(), "-l".to_string()]
+            } else if rootfs.join("bin/sh").exists() {
+                vec!["/bin/sh".to_string(), "-i".to_string()]
+            } else {
+                return Err(CoreError::SubsystemFailure("The installed rootfs has no Linux shell".into()));
+            };
+            let provider = self.resolve_proot_provider();
+            let args = provider.build_proot_command(manager.config(), &shell);
+            let env = manager.build_guest_env(&self.get_gpu_acceleration_mode().build_guest_env());
+            session.spawn_shell(&provider.proot_binary().to_string_lossy(), &args, &env, None)?;
+            session.associate_environment(env_id);
+            self.record_start(manager)?;
+        } else {
             let host_sh = if std::path::Path::new("/system/bin/sh").exists() {
                 "/system/bin/sh"
             } else {
                 "/bin/sh"
             };
-            let home_str = self.config.base_data_dir.to_string_lossy().to_string();
+            let home = self.config.base_data_dir.to_string_lossy().to_string();
             let env = vec![
                 ("TERM".to_string(), "xterm-256color".to_string()),
-                ("HOME".to_string(), home_str.clone()),
+                ("HOME".to_string(), home.clone()),
             ];
-            let _ = session.spawn_shell(host_sh, &["-i".to_string()], &env, Some(&home_str));
+            session.spawn_shell(host_sh, &["-i".to_string()], &env, Some(&home))?;
         }
 
         let fd = session.master_fd();
-        let mut guard = self
-            .terminal_sessions
-            .write()
-            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
-        guard.insert(id.to_string(), session);
+        sessions.insert(id.to_string(), session);
         Ok(fd)
+    }
+
+    pub fn terminal_exit_status(&self, id: &str) -> Result<Option<i32>, CoreError> {
+        let mut sessions = self.terminal_sessions.write()
+            .map_err(|_| CoreError::SubsystemFailure("Terminal lock poisoned".into()))?;
+        let session = sessions.get_mut(id)
+            .ok_or_else(|| CoreError::SubsystemFailure("Terminal is closed".into()))?;
+        Ok(session.exit_status())
+    }
+
+    fn close_environment_terminals(&self, id: &str) -> Result<(), CoreError> {
+        let mut sessions = self.terminal_sessions.write()
+            .map_err(|_| CoreError::SubsystemFailure("Terminal lock poisoned".into()))?;
+        sessions.retain(|_, session| !session.belongs_to_environment(id));
+        Ok(())
     }
 
     pub fn write_terminal(&self, id: &str, data: &[u8]) -> Result<usize, CoreError> {
@@ -418,6 +616,11 @@ impl EngineCore {
         env_config.memory_limit_mb = memory_limit_mb;
         env_config.validate()?;
 
+        let mut guard = self.environments.write()
+            .map_err(|_| CoreError::SubsystemFailure("Environment lock poisoned".into()))?;
+        if guard.contains_key(id) || self.storage.environment_root(id).symlink_metadata().is_ok() {
+            return Err(CoreError::SubsystemFailure("Environment already exists".into()));
+        }
         self.storage.ensure_environment_directories(id)?;
         let cfg_json = serde_json::to_string_pretty(&env_config)?;
         self.storage.save_environment_config(id, &cfg_json)?;
@@ -427,10 +630,6 @@ impl EngineCore {
             .with_artifacts_dir(&self.config.runtime_artifacts_dir);
         manager.initialize().map_err(CoreError::Runtime)?;
 
-        let mut guard = self
-            .environments
-            .write()
-            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         guard.insert(id.to_string(), manager);
         info!("Environment '{id}' provisioned successfully ({distro})");
         Ok(env_config)
@@ -441,13 +640,41 @@ impl EngineCore {
             .environments
             .write()
             .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        self.ensure_no_package_operation(id)?;
         if let Some(manager) = guard.get_mut(id) {
-            manager.start().map_err(CoreError::Runtime)
+            if !manager.is_running() && !self.has_live_terminal(id)? {
+                manager.start()?;
+                if let Err(error) = self.record_start(manager) {
+                    let _ = manager.stop();
+                    return Err(error);
+                }
+            }
+            Ok(())
         } else {
             Err(CoreError::Runtime(
                 androidpc_runtime_api::RuntimeError::Internal(format!("Environment not found: {id}")),
             ))
         }
+    }
+
+    fn has_live_terminal(&self, id: &str) -> Result<bool, CoreError> {
+        let mut sessions = self.terminal_sessions.write()
+            .map_err(|_| CoreError::SubsystemFailure("Terminal lock poisoned".into()))?;
+        Ok(sessions.values_mut().any(|session| session.belongs_to_environment(id) && session.exit_status().is_none()))
+    }
+
+    fn record_start(&self, manager: &mut ProotEnvironmentManager) -> Result<(), CoreError> {
+        let previous = manager.config().last_started_at_epoch_ms;
+        manager.set_last_started(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .ok().map(|duration| duration.as_millis() as u64));
+        let config = manager.config();
+        let root = config.rootfs_directory.parent().ok_or_else(|| CoreError::SubsystemFailure("Missing environment directory".into()))?;
+        let result = self.storage.save_config_at(root, &serde_json::to_vec_pretty(config)?);
+        if let Err(error) = result {
+            manager.set_last_started(previous);
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     pub fn execute_environment_command(&self, id: &str, cmd: &[String]) -> Result<ProcessId, CoreError> {
@@ -456,6 +683,7 @@ impl EngineCore {
             .environments
             .write()
             .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        self.ensure_no_package_operation(id)?;
         if let Some(manager) = guard.get_mut(id) {
             manager
                 .execute_guest_command_with_env(cmd, &gpu_env)
@@ -472,29 +700,83 @@ impl EngineCore {
             .environments
             .write()
             .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        self.ensure_no_package_operation(id)?;
+        self.stop_desktop_for_environment(id, "Linux environment stopped")?;
+        self.close_environment_terminals(id)?;
         if let Some(manager) = guard.get_mut(id) {
             manager.stop().map_err(CoreError::Runtime)?;
         }
         Ok(())
     }
 
+    pub fn recover_environment(&self, id: &str, restart: bool) -> Result<(), CoreError> {
+        let mut environments = self.environments.write()
+            .map_err(|_| CoreError::SubsystemFailure("Environment lock poisoned".into()))?;
+        self.ensure_no_package_operation(id)?;
+        let manager = environments.get_mut(id)
+            .ok_or_else(|| CoreError::SubsystemFailure("Environment not installed".into()))?;
+        self.stop_desktop_for_environment(id, "Linux environment recovery")?;
+        self.close_environment_terminals(id)?;
+        manager.stop()?;
+        if restart {
+            manager.start()?;
+            if let Err(error) = self.record_start(manager) {
+                let _ = manager.stop();
+                return Err(error);
+            }
+        } else {
+            manager.repair_guest()?;
+        }
+        Ok(())
+    }
+
     pub fn delete_environment(&self, id: &str) -> Result<(), CoreError> {
+        EnvironmentConfig::validate_id(id)?;
         let mut guard = self
             .environments
             .write()
             .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
-        if let Some(mut manager) = guard.remove(id) {
-            let _ = manager.stop();
+        self.ensure_no_package_operation(id)?;
+        let manager = guard.get(id)
+            .ok_or_else(|| CoreError::SubsystemFailure("Environment not installed".into()))?;
+        if manager.is_running() || self.has_live_terminal(id)? || self.has_live_desktop(id)? {
+            return Err(CoreError::SubsystemFailure("Stop the environment before removing it".into()));
         }
-        self.storage.remove_environment(id)?;
+        self.close_environment_terminals(id)?;
+        let path = manager.config().rootfs_directory.parent()
+            .ok_or_else(|| CoreError::SubsystemFailure("Missing environment directory".into()))?;
+        let removed = path.with_file_name(format!(".deleted-{id}"));
+        let moved = match std::fs::rename(&path, &removed) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.into()),
+        };
+        guard.remove(id);
+        drop(guard);
+        if moved {
+            std::fs::remove_dir_all(removed)?;
+        }
         Ok(())
     }
 
     pub fn get_environment_state(&self, id: &str) -> Option<EnvironmentState> {
-        self.environments
+        if let Some(state) = self.package_state(id) {
+            return Some(state);
+        }
+        let state = self.environments
             .read()
             .ok()
-            .and_then(|guard| guard.get(id).map(|m| m.state()))
+            .and_then(|guard| guard.get(id).map(|m| m.state()));
+        let Some(state) = state else {
+            return self.install_progress.lock().ok()?.as_ref()
+                .filter(|progress| progress.id == id && progress.state != EnvironmentState::Ready)
+                .map(|progress| progress.state);
+        };
+        if self.has_live_terminal(id).ok()? || self.has_live_desktop(id).ok()? {
+            Some(EnvironmentState::Running)
+        } else {
+            Some(state)
+        }
     }
 
     pub fn list_environments(&self) -> Vec<EnvironmentConfig> {
@@ -502,6 +784,16 @@ impl EngineCore {
             Ok(guard) => guard.values().map(|m| m.config().clone()).collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    pub fn environment_storage_bytes(&self, id: &str) -> Result<u64, CoreError> {
+        let environments = self.environments.read()
+            .map_err(|_| CoreError::SubsystemFailure("Environment lock poisoned".into()))?;
+        let manager = environments.get(id)
+            .ok_or_else(|| CoreError::SubsystemFailure("Environment not installed".into()))?;
+        let root = manager.config().rootfs_directory.parent()
+            .ok_or_else(|| CoreError::SubsystemFailure("Missing environment directory".into()))?;
+        Ok(self.storage.environment_storage_bytes(root)?)
     }
 
     pub fn get_artifact_metadata(&self, distro: &str) -> Option<ArtifactMetadata> {
@@ -552,6 +844,34 @@ impl EngineCore {
         }
     }
 
+    /// Polls RFB updates and copies the framebuffer into `out` ONLY when `generation != last_gen`.
+    /// Returns `0` when unchanged, or the new `generation` when updated.
+    pub fn get_framebuffer_if_dirty(&self, out: &mut [u8], last_gen: u64) -> Result<u64, CoreError> {
+        let mut guard = self
+            .rfb_client
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        if let Some(client) = guard.as_mut() {
+            if client.is_connected {
+                let _ = client.poll_updates();
+                let _ = client.request_frame(true);
+            }
+            if client.generation == last_gen {
+                return Ok(0);
+            }
+            let len = client.framebuffer.len();
+            if out.len() < len {
+                return Ok(0);
+            }
+            out[..len].copy_from_slice(&client.framebuffer);
+            Ok(client.generation.max(1))
+        } else {
+            Err(CoreError::Runtime(
+                androidpc_runtime_api::RuntimeError::Internal("RFB client not connected".into()),
+            ))
+        }
+    }
+
     pub fn send_display_pointer(&self, button_mask: u8, x: u16, y: u16) -> Result<(), CoreError> {
         let mut guard = self
             .rfb_client
@@ -587,6 +907,40 @@ impl EngineCore {
             client.disconnect();
         }
         Ok(())
+    }
+
+    pub fn has_live_display_connection(&self) -> bool {
+        self.rfb_client.read().ok().is_some_and(|client| {
+            client.as_ref().is_some_and(|client| client.is_connected)
+        })
+    }
+
+    pub fn send_display_clipboard(&self, text: &str) -> Result<(), CoreError> {
+        let mut guard = self
+            .rfb_client
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        if let Some(client) = guard.as_mut() {
+            client
+                .send_clipboard(text)
+                .map_err(|e| CoreError::Runtime(androidpc_runtime_api::RuntimeError::Internal(e.to_string())))?;
+        }
+        Ok(())
+    }
+
+    pub fn take_display_clipboard(&self) -> Result<Option<String>, CoreError> {
+        let mut guard = self
+            .rfb_client
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        Ok(guard.as_mut().and_then(|c| c.take_server_clipboard()))
+    }
+
+    pub fn get_display_dimensions(&self) -> (u16, u16) {
+        match self.rfb_client.read() {
+            Ok(guard) => guard.as_ref().map(|c| (c.width, c.height)).unwrap_or((0, 0)),
+            Err(_) => (0, 0),
+        }
     }
 
     pub fn start_audio_sink(&self, port: u16) -> Result<u16, CoreError> {
@@ -649,6 +1003,7 @@ impl EngineCore {
             .environments
             .write()
             .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        self.ensure_no_package_operation(env_id)?;
         if let Some(env_mgr) = guard.get_mut(env_id) {
             let clean_rel = prefix.strip_prefix("/").unwrap_or(&prefix);
             let host_prefix = env_mgr.config().rootfs_directory.join(clean_rel);
@@ -701,6 +1056,7 @@ impl EngineCore {
             .environments
             .write()
             .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
+        self.ensure_no_package_operation(env_id)?;
         if let Some(env_mgr) = guard.get_mut(env_id) {
             let mut merged_env = cmd.env.clone();
             merged_env.extend(self.get_gpu_acceleration_mode().build_guest_env());
@@ -819,7 +1175,7 @@ mod tests {
         let core = EngineCore::new(config).expect("EngineCore::new should succeed");
         let diag = core.collect_diagnostics();
         assert_eq!(diag.engine_version, ENGINE_VERSION);
-        assert!(diag.rootless_ptrace_supported);
+        assert!(!diag.rootless_ptrace_supported);
     }
 
     #[test]
@@ -829,6 +1185,49 @@ mod tests {
         let dist_ids = core.list_distribution_ids();
         assert!(dist_ids.contains(&"ubuntu".to_string()));
         assert!(dist_ids.contains(&"debian".to_string()));
+    }
+
+    #[test]
+    fn registry_reopens_scoped_and_legacy_guests_without_collisions() {
+        let base = std::env::temp_dir().join(format!("androidpc-registry-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let cfg = EngineConfig { base_data_dir: base.clone(), ..EngineConfig::default() };
+        let core = EngineCore::new(cfg.clone()).unwrap();
+        core.provision_environment("legacy", "debian").unwrap();
+        let fixtures = [
+            ("f15d206e-e6c9-4f2a-87bc-5a3a68a1b117", "ubuntu"),
+            ("f15d206e-e6c9-4f2a-87bc-5a3a68a1b118", "ubuntu"),
+            ("f15d206e-e6c9-4f2a-87bc-5a3a68a1b119", "debian"),
+        ];
+        assert!(EnvironmentConfig::validate_new_id("legacy").is_err());
+        for (id, distribution) in fixtures {
+            EnvironmentConfig::validate_new_id(id).unwrap();
+            let directory = core.storage.distribution_root(distribution).unwrap().join(id);
+            let mut config = core.create_environment_config(id, distribution);
+            config.rootfs_directory = directory.join("rootfs");
+            config.display_name = Some("Same display name".to_owned());
+            std::fs::create_dir_all(&config.rootfs_directory).unwrap();
+            core.storage.save_config_at(&directory, &serde_json::to_vec(&config).unwrap()).unwrap();
+        }
+        let duplicate = core.storage.distribution_root("ubuntu").unwrap().join("wrong-location");
+        std::fs::create_dir_all(duplicate.join("rootfs")).unwrap();
+        let config = core.create_environment_config(fixtures[0].0, "ubuntu");
+        core.storage.save_config_at(&duplicate, &serde_json::to_vec(&config).unwrap()).unwrap();
+        drop(core);
+        let core = EngineCore::new(cfg.clone()).unwrap();
+        assert_eq!(core.list_environments().len(), 4);
+        let id = fixtures[0].0;
+        {
+            let mut registry = core.environments.write().unwrap();
+            core.record_start(registry.get_mut(id).unwrap()).unwrap();
+        }
+        drop(core);
+        let core = EngineCore::new(cfg).unwrap();
+        assert!(core.list_environments().iter().find(|env| env.id == id).unwrap().last_started_at_epoch_ms.is_some());
+        core.delete_environment(id).unwrap();
+        assert_eq!(core.list_environments().len(), 3);
+        assert!(core.storage.distribution_root("ubuntu").unwrap().join(fixtures[1].0).exists());
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

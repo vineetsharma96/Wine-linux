@@ -6,6 +6,8 @@ use androidpc_runtime_api::{RuntimeError, TerminalSession};
 
 pub struct DefaultTerminalSession {
     session_id: String,
+    environment_id: Option<String>,
+    exit_status: Option<i32>,
     cols: u16,
     rows: u16,
     is_closed: Arc<AtomicBool>,
@@ -43,6 +45,8 @@ impl DefaultTerminalSession {
 
             let mut session = Self {
                 session_id: id,
+                environment_id: None,
+                exit_status: None,
                 cols,
                 rows,
                 is_closed: Arc::new(AtomicBool::new(false)),
@@ -60,12 +64,46 @@ impl DefaultTerminalSession {
             info!("Host mock PTY session allocated for '{}'", id);
             Ok(Self {
                 session_id: id,
+                environment_id: None,
+                exit_status: None,
                 cols,
                 rows,
                 is_closed: Arc::new(AtomicBool::new(false)),
                 mock_buffer: Vec::new(),
             })
         }
+    }
+
+    pub fn associate_environment(&mut self, id: &str) {
+        self.environment_id = Some(id.to_owned());
+    }
+
+    pub fn belongs_to_environment(&self, id: &str) -> bool {
+        self.environment_id.as_deref() == Some(id)
+    }
+
+    pub fn live_pid(&mut self) -> Option<u32> {
+        self.exit_status();
+        #[cfg(unix)]
+        { self.child_pid.map(|pid| pid as u32) }
+        #[cfg(not(unix))]
+        { None }
+    }
+
+    pub fn exit_status(&mut self) -> Option<i32> {
+        #[cfg(unix)]
+        if let Some(pid) = self.child_pid {
+            let mut status = 0;
+            if unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } == pid {
+                self.child_pid = None;
+                self.exit_status = Some(if libc::WIFEXITED(status) {
+                    libc::WEXITSTATUS(status)
+                } else {
+                    128 + libc::WTERMSIG(status)
+                });
+            }
+        }
+        self.exit_status
     }
 
     #[cfg(unix)]
@@ -129,6 +167,8 @@ impl DefaultTerminalSession {
                 env_c.push(entry);
             }
         }
+        let mut env_ptrs: Vec<_> = env_c.iter().map(|value| value.as_ptr()).collect();
+        env_ptrs.push(std::ptr::null());
         let cwd_c = cwd.and_then(|c| CString::new(c).ok());
 
         let pid = unsafe { libc::fork() };
@@ -156,19 +196,7 @@ impl DefaultTerminalSession {
                 if let Some(ref dir) = cwd_c {
                     libc::chdir(dir.as_ptr());
                 }
-                // Clear inherited Android environment variables so internal vars
-                // (e.g. DEX2OATBOOTCLASSPATH) do not leak into the Linux guest.
-                #[cfg(target_os = "android")]
-                libc::clearenv();
-                #[cfg(target_os = "linux")]
-                libc::clearenv();
-                for kv in &env_c {
-                    let ptr = libc::strdup(kv.as_ptr());
-                    if !ptr.is_null() {
-                        libc::putenv(ptr);
-                    }
-                }
-                libc::execvp(prog_c.as_ptr(), argv_ptrs.as_ptr());
+                libc::execve(prog_c.as_ptr(), argv_ptrs.as_ptr(), env_ptrs.as_ptr());
                 libc::_exit(127);
             }
         }
@@ -298,11 +326,25 @@ impl TerminalSession for DefaultTerminalSession {
 
         #[cfg(unix)]
         {
+            self.exit_status();
             if let Some(pid) = self.child_pid.take() {
                 unsafe {
                     libc::kill(pid, libc::SIGTERM);
-                    let mut status: libc::c_int = 0;
-                    libc::waitpid(pid, &mut status, libc::WNOHANG);
+                }
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+                loop {
+                    let mut status = 0;
+                    let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+                    if result == pid || (result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)) {
+                        break;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        unsafe { libc::kill(pid, libc::SIGKILL) };
+                        while unsafe { libc::waitpid(pid, &mut status, 0) } < 0
+                            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {}
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
             }
             if self.master_fd >= 0 {

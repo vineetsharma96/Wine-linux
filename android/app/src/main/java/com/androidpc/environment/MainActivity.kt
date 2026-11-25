@@ -29,6 +29,8 @@ class MainActivity : ComponentActivity() {
         HealthCheck,
         SystemInfo,
         CreateEnvironment,
+        EnvironmentDetails,
+        EnvironmentBackups,
         DisplayViewport,
         VirtualMachines,
         Artifacts,
@@ -49,16 +51,28 @@ class MainActivity : ComponentActivity() {
                     var healthReport by remember { mutableStateOf<HealthReportData?>(null) }
                     var diagnostics by remember { mutableStateOf<SystemDiagnosticsData?>(null) }
                     var environments by remember { mutableStateOf<List<EnvironmentConfigData>>(emptyList()) }
-                    var selectedEnvId by remember { mutableStateOf("env-ubuntu") }
+                    var backupSourceId by remember { mutableStateOf<String?>(null) }
+                    var environmentStates by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+                    var environmentStorage by remember { mutableStateOf<Map<String, Long?>>(emptyMap()) }
+                    var environmentActionMessage by remember { mutableStateOf<String?>(null) }
+                    val prefs = remember { applicationContext.getSharedPreferences("androidpc_prefs", MODE_PRIVATE) }
+                    var defaultEnvId by remember { mutableStateOf(prefs.getString("default_env_id", "") ?: "") }
+                    var defaultShell by remember { mutableStateOf(prefs.getString("default_shell", "/bin/bash") ?: "/bin/bash") }
+                    var selectedEnvId by remember { mutableStateOf(defaultEnvId.ifEmpty { "env-ubuntu" }) }
                     var wineStatus by remember { mutableStateOf<WineStatusData?>(null) }
                     var wineActionMessage by remember { mutableStateOf<String?>(null) }
                     var isRefreshing by remember { mutableStateOf(false) }
 
-                    var displayResolution by remember { mutableStateOf(1280 to 720) }
+                    var displayResolution by remember {
+                        mutableStateOf(
+                            prefs.getInt("display_width", 1280) to prefs.getInt("display_height", 720)
+                        )
+                    }
                     var activeDisplayPort by remember { mutableIntStateOf(5901) }
-                    var audioEnabled by remember { mutableStateOf(true) }
-                    var wineArch by remember { mutableStateOf("win64") }
-                    var gpuMode by remember { mutableStateOf("software") }
+                    var managedDesktop by remember { mutableStateOf(true) }
+                    var audioEnabled by remember { mutableStateOf(prefs.getBoolean("audio_enabled", true)) }
+                    var wineArch by remember { mutableStateOf(prefs.getString("wine_arch", "win64") ?: "win64") }
+                    var gpuMode by remember { mutableStateOf(prefs.getString("gpu_mode", "software") ?: "software") }
 
                     val refreshData: () -> Unit = {
                         isRefreshing = true
@@ -68,8 +82,14 @@ class MainActivity : ComponentActivity() {
                             NativeBridge.getDiagnostics().onSuccess { diagnostics = it }
                             NativeBridge.listEnvironments().onSuccess { envs ->
                                 environments = envs
+                                environmentStates = envs.associate { it.id to NativeBridge.getEnvironmentState(it.id) }
+                                environmentStorage = envs.associate { it.id to NativeBridge.environmentStorageBytes(it.id) }
                                 if (envs.isNotEmpty() && envs.none { it.id == selectedEnvId }) {
-                                    selectedEnvId = envs.first().id
+                                    selectedEnvId = envs.firstOrNull { it.id == defaultEnvId }?.id ?: envs.first().id
+                                }
+                                if (envs.isNotEmpty() && defaultEnvId.isEmpty()) {
+                                    defaultEnvId = envs.first().id
+                                    prefs.edit().putString("default_env_id", defaultEnvId).apply()
                                 }
                             }
                             NativeBridge.getWineStatus(selectedEnvId).onSuccess { wineStatus = it }
@@ -79,6 +99,7 @@ class MainActivity : ComponentActivity() {
 
                     LaunchedEffect(Unit) {
                         NativeBridge.initEngine(applicationContext)
+                        NativeBridge.setGpuAccelerationMode(gpuMode)
                         refreshData()
                     }
 
@@ -93,6 +114,10 @@ class MainActivity : ComponentActivity() {
                             engineStatus = engineStatus,
                             healthReport = healthReport,
                             environments = environments,
+                            environmentStates = environmentStates,
+                            environmentStorage = environmentStorage,
+                            availableStorageBytes = diagnostics?.available_storage_bytes,
+                            environmentActionMessage = environmentActionMessage,
                             wineStatus = wineStatus,
                             wineActionMessage = wineActionMessage,
                             isRefreshing = isRefreshing,
@@ -102,26 +127,46 @@ class MainActivity : ComponentActivity() {
                                 selectedEnvId = envId
                                 lifecycleScope.launch {
                                     NativeBridge.startEnvironment(envId)
-                                        .onSuccess { wineActionMessage = "Started environment '$envId'" }
-                                        .onFailure { wineActionMessage = "Start failed: ${it.message}" }
+                                        .onSuccess { environmentActionMessage = "Environment started" }
+                                        .onFailure { environmentActionMessage = "Start failed: ${it.message}" }
                                     refreshData()
                                 }
                             },
                             onStopEnvironment = { envId ->
                                 lifecycleScope.launch {
                                     NativeBridge.stopEnvironment(envId)
-                                        .onSuccess { wineActionMessage = "Stopped environment '$envId'" }
-                                        .onFailure { wineActionMessage = "Stop failed: ${it.message}" }
+                                        .onSuccess { environmentActionMessage = "Environment stopped" }
+                                        .onFailure { environmentActionMessage = "Stop failed: ${it.message}" }
                                     refreshData()
                                 }
                             },
                             onDeleteEnvironment = { envId ->
                                 lifecycleScope.launch {
                                     NativeBridge.deleteEnvironment(envId)
-                                        .onSuccess { wineActionMessage = "Removed environment '$envId'" }
-                                        .onFailure { wineActionMessage = "Remove failed: ${it.message}" }
+                                        .onSuccess { environmentActionMessage = "Environment removed" }
+                                        .onFailure { environmentActionMessage = "Remove failed: ${it.message}" }
                                     refreshData()
                                 }
+                            },
+                            onRecoverEnvironment = { envId, restart ->
+                                lifecycleScope.launch {
+                                    NativeBridge.recoverEnvironment(envId, restart)
+                                        .onSuccess { environmentActionMessage = if (restart) "Environment restarted" else "Guest configuration repaired" }
+                                        .onFailure { environmentActionMessage = it.message }
+                                    refreshData()
+                                }
+                            },
+                            onOpenEnvironmentTerminal = { envId ->
+                                selectedEnvId = envId
+                                currentScreen = Screen.Terminal
+                            },
+                            onOpenEnvironmentDetails = { envId ->
+                                selectedEnvId = envId
+                                currentScreen = Screen.EnvironmentDetails
+                            },
+                            onOpenBackups = {
+                                backupSourceId = null
+                                currentScreen = Screen.EnvironmentBackups
                             },
                             onInitWinePrefix = {
                                 lifecycleScope.launch {
@@ -160,6 +205,7 @@ class MainActivity : ComponentActivity() {
                             onOpenSystemInfo = { currentScreen = Screen.SystemInfo },
                             onOpenDisplayViewport = {
                                 activeDisplayPort = 5901
+                                managedDesktop = true
                                 currentScreen = Screen.DisplayViewport
                             },
                             onOpenTerminal = { currentScreen = Screen.Terminal },
@@ -169,18 +215,45 @@ class MainActivity : ComponentActivity() {
                         )
                         Screen.Terminal -> TerminalScreen(
                             envId = selectedEnvId,
+                            defaultShell = defaultShell,
                             onBack = { currentScreen = Screen.Dashboard }
                         )
+                        Screen.EnvironmentDetails -> environments.firstOrNull { it.id == selectedEnvId }?.let { env ->
+                            EnvironmentDetailsScreen(env, environmentStates[env.id], environmentStorage[env.id], onBackups = {
+                                backupSourceId = env.id
+                                currentScreen = Screen.EnvironmentBackups
+                            }) {
+                                refreshData()
+                                currentScreen = Screen.Dashboard
+                            }
+                        } ?: Unit
+                        Screen.EnvironmentBackups -> EnvironmentBackupsScreen(
+                            source = environments.firstOrNull { it.id == backupSourceId },
+                            onBack = {
+                                currentScreen = if (backupSourceId == null) Screen.Dashboard else Screen.EnvironmentDetails
+                            },
+                            onRestored = { id ->
+                                selectedEnvId = id
+                                refreshData()
+                                currentScreen = Screen.Dashboard
+                            },
+                        )
                         Screen.DisplayViewport -> DisplayViewportScreen(
+                            environmentId = environments.firstOrNull { it.id == defaultEnvId }?.id.orEmpty(),
                             displayPort = activeDisplayPort,
+                            managedDesktop = managedDesktop,
                             targetWidth = displayResolution.first,
                             targetHeight = displayResolution.second,
                             audioEnabled = audioEnabled,
-                            onDisconnect = { currentScreen = Screen.Dashboard }
+                            onDisconnect = {
+                                currentScreen = Screen.Dashboard
+                                refreshData()
+                            }
                         )
                         Screen.VirtualMachines -> VirtualMachinesScreen(
                             onOpenVmDisplay = { vncPort ->
                                 activeDisplayPort = vncPort
+                                managedDesktop = false
                                 currentScreen = Screen.DisplayViewport
                             },
                             onBack = { currentScreen = Screen.Dashboard }
@@ -199,10 +272,10 @@ class MainActivity : ComponentActivity() {
                         )
                         Screen.CreateEnvironment -> CreateEnvironmentScreen(
                             onBack = { currentScreen = Screen.Dashboard },
-                            onCreated = { distro ->
-                                selectedEnvId = "env-$distro"
+                            onCreated = { id ->
+                                selectedEnvId = id
                                 refreshData()
-                                currentScreen = Screen.DisplayViewport
+                                currentScreen = Screen.Terminal
                             }
                         )
                         Screen.Settings -> SettingsScreen(
@@ -210,14 +283,36 @@ class MainActivity : ComponentActivity() {
                             audioEnabled = audioEnabled,
                             wineArch = wineArch,
                             gpuMode = gpuMode,
-                            onResolutionChange = { displayResolution = it },
-                            onAudioEnabledChange = { audioEnabled = it },
-                            onWineArchChange = { wineArch = it },
+                            environments = environments,
+                            defaultEnvId = defaultEnvId,
+                            defaultShell = defaultShell,
+                            onResolutionChange = { res ->
+                                displayResolution = res
+                                prefs.edit().putInt("display_width", res.first).putInt("display_height", res.second).apply()
+                            },
+                            onAudioEnabledChange = { enabled ->
+                                audioEnabled = enabled
+                                prefs.edit().putBoolean("audio_enabled", enabled).apply()
+                            },
+                            onWineArchChange = { arch ->
+                                wineArch = arch
+                                prefs.edit().putString("wine_arch", arch).apply()
+                            },
                             onGpuModeChange = { newMode ->
                                 gpuMode = newMode
+                                prefs.edit().putString("gpu_mode", newMode).apply()
                                 lifecycleScope.launch {
                                     NativeBridge.setGpuAccelerationMode(newMode)
                                 }
+                            },
+                            onDefaultEnvChange = { id ->
+                                defaultEnvId = id
+                                selectedEnvId = id
+                                prefs.edit().putString("default_env_id", id).apply()
+                            },
+                            onDefaultShellChange = { sh ->
+                                defaultShell = sh
+                                prefs.edit().putString("default_shell", sh).apply()
                             },
                             onBack = { currentScreen = Screen.Dashboard }
                         )

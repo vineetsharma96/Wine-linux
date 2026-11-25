@@ -1,0 +1,17 @@
+# XERJ Integration & Agent Code Intelligence
+
+## Overview
+XERJ (`xerj.exe`, local node `http://127.0.0.1:9200`, data dir `C:\Users\abc\xerj-data`, embeddings `all-MiniLM-L6-v2`) is the permanent code-intelligence, semantic search, and project-memory layer for Android PC Environment. XERJ runs strictly in the development environment and is **not** embedded in the Android APK.
+
+## Configuration
+- **MCP Config**: [.mcp.json](file:///c:/GitHub%20Projects/Working/LINUX+WINE/.mcp.json) registers `C:\Users\abc\AppData\Local\Programs\xerj\xerj.exe mcp` with `XERJ_URL=http://127.0.0.1:9200`.
+- **Ignore Rules**: [.xerjignore](file:///c:/GitHub%20Projects/Working/LINUX+WINE/.xerjignore) excludes `target/`, `rust/target/`, `android/build/`, `android/app/build/`, `.gradle/`, `.cxx/`, `runtime/proot/`, `runtime/xvnc/`, `assets/`, `android/app/src/main/jniLibs/`, `android/app/src/main/assets/`, `android/app/src/release/assets/`, `local.properties`, and all keystores/keys (`*.keystore`, `*.jks`, `*.pem`, `*.key`, `*.sig`, `*.p12`).
+- **Index Prefix**: `androidpc` (`androidpc-code`, `androidpc-docs`, `.xerj-memory-androidpc`, `.xerj-memory-linux-wine-edges`).
+
+## Standard Commands
+```powershell
+$XERJ = "C:\Users\abc\AppData\Local\Programs\xerj\xerj.exe"
+& $XERJ autoindex . --prefix androidpc --code-analyzer code --workers 2
+& $XERJ def "start_desktop_session" --prefix androidpc
+& $XERJ search "DirectByteBuffer framebuffer" --prefix androidpc
+```

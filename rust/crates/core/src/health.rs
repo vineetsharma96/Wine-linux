@@ -49,7 +49,11 @@ pub fn execute_health_check(config: &EngineConfig) -> HealthReport {
     let proot_bin_name = androidpc_linux_runtime::ProotRuntimeProvider::binary_name_for_arch(
         androidpc_runtime_api::Architecture::host(),
     );
-    let proot_exists = config.runtime_artifacts_dir.join(proot_bin_name).is_file();
+    let proot_exists = if cfg!(target_os = "android") {
+        config.native_lib_dir.as_ref().is_some_and(|dir| dir.join("libproot.so").is_file())
+    } else {
+        config.runtime_artifacts_dir.join(proot_bin_name).is_file()
+    };
     let xvnc_exists = config
         .runtime_artifacts_dir
         .join("tigervnc-arm64")
@@ -61,7 +65,7 @@ pub fn execute_health_check(config: &EngineConfig) -> HealthReport {
         (
             HealthLevel::Healthy,
             format!(
-                "Rootless ptrace ready ({}; Xvnc: {})",
+                "PRoot executable packaged ({}; Xvnc: {})",
                 proot_bin_name,
                 if xvnc_exists { "installed" } else { "pending" }
             ),

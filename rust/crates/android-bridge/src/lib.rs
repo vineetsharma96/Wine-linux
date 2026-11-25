@@ -10,6 +10,8 @@ use androidpc_display::{KeyEvent, PointerEvent};
 use androidpc_runtime_api::DisplayConfig;
 use androidpc_wine::WineArch;
 
+pub mod native_display;
+
 static ENGINE_INSTANCE: RwLock<Option<EngineCore>> = RwLock::new(None);
 
 fn create_jstring<'a>(env: &mut JNIEnv<'a>, value: &str) -> jstring {
@@ -53,12 +55,15 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
             }
         };
 
+        let mut guard = match ENGINE_INSTANCE.write() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if guard.is_some() {
+            return 0;
+        }
         match EngineCore::new(config) {
             Ok(core) => {
-                let mut guard = match ENGINE_INSTANCE.write() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
                 *guard = Some(core);
                 androidpc_logging::push_log(
                     "INFO",
@@ -321,6 +326,261 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeStartDesktopSession(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+    display_num: jint,
+    width: jint,
+    height: jint,
+    dpi: jint,
+    port: jint,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env_str: String = match env.get_string(&env_id) {
+            Ok(s) => s.into(),
+            Err(_) => String::new(),
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.start_desktop_session(
+                &env_str,
+                display_num as u32,
+                width as u32,
+                height as u32,
+                dpi as u32,
+                port as u16,
+            ) {
+                Ok(endpoint) => {
+                    let json = serde_json::to_string(&endpoint).unwrap_or_else(|_| "{}".to_string());
+                    create_jstring(&mut env, &json)
+                }
+                Err(e) => {
+                    androidpc_logging::push_log(
+                        "ERROR",
+                        "androidpc::bridge",
+                        &format!("Failed to start desktop session: {e}"),
+                    );
+                    create_jstring(&mut env, &serde_json::json!({ "error": e.to_string() }).to_string())
+                }
+            }
+        } else {
+            create_jstring(&mut env, "{\"error\":\"Engine not initialized\"}")
+        }
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeStopDesktopSession(
+    mut env: JNIEnv,
+    _class: JClass,
+    session_id: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let session_id: String = match env.get_string(&session_id) {
+            Ok(value) => value.into(),
+            Err(_) => return -1,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.stop_desktop_session(Some(&session_id)) {
+                Ok(_) => 0,
+                Err(e) => {
+                    androidpc_logging::push_log(
+                        "ERROR",
+                        "androidpc::bridge",
+                        &format!("Failed to stop desktop session: {e}"),
+                    );
+                    -1
+                }
+            }
+        } else {
+            -2
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeHasLiveDisplayConnection(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jboolean {
+    ENGINE_INSTANCE.read().ok().and_then(|engine| {
+        engine.as_ref().map(|core| core.has_live_display_connection())
+    }).unwrap_or(false) as jni::sys::jboolean
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeGetDesktopStatus(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env_str: String = match env.get_string(&env_id) {
+            Ok(s) => s.into(),
+            Err(_) => String::new(),
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.desktop_status(&env_str) {
+                Ok(status) => {
+                    let json = serde_json::to_string(&status).unwrap_or_else(|_| "{}".to_string());
+                    create_jstring(&mut env, &json)
+                }
+                Err(e) => create_jstring(
+                    &mut env,
+                    &serde_json::json!({ "error": e.to_string() }).to_string(),
+                ),
+            }
+        } else {
+            create_jstring(&mut env, "{\"error\":\"Engine not initialized\"}")
+        }
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeResizeDesktopSession(
+    _env: JNIEnv,
+    _class: JClass,
+    width: jint,
+    height: jint,
+) -> jlong {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.resize_desktop_session(width as u32, height as u32) {
+                Ok((w, h)) => ((w as jlong) << 32) | ((h as jlong) & 0xffffffff),
+                Err(_) => 0,
+            }
+        } else {
+            0
+        }
+    }));
+    result.unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeSendDisplayClipboard(
+    mut env: JNIEnv,
+    _class: JClass,
+    text: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let text_str: String = match env.get_string(&text) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            if core.send_display_clipboard(&text_str).is_ok() { 0 } else { -1 }
+        } else {
+            -2
+        }
+    }));
+    result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeTakeDisplayClipboard(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            if let Ok(Some(text)) = core.take_display_clipboard() {
+                return create_jstring(&mut env, &text);
+            }
+        }
+        std::ptr::null_mut()
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeGetDisplayDimensions(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            let (w, h) = core.get_display_dimensions();
+            ((w as jlong) << 32) | ((h as jlong) & 0xffffffff)
+        } else {
+            0
+        }
+    }));
+    result.unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeInstallDesktopProfile(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+    profile: JString,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env_str: String = match env.get_string(&env_id) {
+            Ok(s) => s.into(),
+            Err(_) => String::new(),
+        };
+        let profile_str: String = match env.get_string(&profile) {
+            Ok(s) => s.into(),
+            Err(_) => "minimal".to_string(),
+        };
+        let Some(kind) = androidpc_display::DesktopProfileKind::from_str(&profile_str) else {
+            return create_jstring(&mut env, "{\"error\":\"Unknown desktop profile\"}");
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            match core.install_desktop_profile(&env_str, kind) {
+                Ok(res) => {
+                    let json = serde_json::to_string(&res).unwrap_or_else(|_| "{}".to_string());
+                    create_jstring(&mut env, &json)
+                }
+                Err(e) => create_jstring(
+                    &mut env,
+                    &serde_json::json!({ "error": e.to_string() }).to_string(),
+                ),
+            }
+        } else {
+            create_jstring(&mut env, "{\"error\":\"Engine not initialized\"}")
+        }
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeStopDisplayServer(
     _env: JNIEnv,
     _class: JClass,
@@ -530,6 +790,24 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
     }));
 
     result.unwrap_or(-99)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeTerminalExitStatus(
+    mut env: JNIEnv,
+    _class: JClass,
+    session_id: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(id) = env.get_string(&session_id) else { return -2 };
+        let id: String = id.into();
+        let Ok(engine) = ENGINE_INSTANCE.read() else { return -2 };
+        match engine.as_ref().map(|core| core.terminal_exit_status(&id)) {
+            Some(Ok(status)) => status.unwrap_or(-1),
+            _ => -2,
+        }
+    }));
+    result.unwrap_or(-2)
 }
 
 #[no_mangle]
@@ -873,6 +1151,42 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
     }));
 
     result.unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeGetFramebufferDirect(
+    env: JNIEnv,
+    _class: JClass,
+    direct_buf: jni::objects::JByteBuffer,
+    last_gen: jlong,
+) -> jlong {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ptr = match env.get_direct_buffer_address(&direct_buf) {
+            Ok(p) if !p.is_null() => p,
+            _ => return -1,
+        };
+        let cap = match env.get_direct_buffer_capacity(&direct_buf) {
+            Ok(c) if c > 0 => c,
+            _ => return -1,
+        };
+
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+
+        if let Some(core) = guard.as_ref() {
+            let out_slice = unsafe { std::slice::from_raw_parts_mut(ptr, cap) };
+            match core.get_framebuffer_if_dirty(out_slice, last_gen as u64) {
+                Ok(new_gen) => new_gen as jlong,
+                Err(_) => -3,
+            }
+        } else {
+            -4
+        }
+    }));
+
+    result.unwrap_or(-99)
 }
 
 #[no_mangle]
@@ -1488,6 +1802,190 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeBackupOperation(
+    mut env: JNIEnv,
+    _class: JClass,
+    operation: JString,
+    source: JString,
+    backup: JString,
+    target: JString,
+    name: JString,
+) -> jstring {
+    catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut run = || -> Result<serde_json::Value, String> {
+            let operation: String = env.get_string(&operation).map_err(|e| e.to_string())?.into();
+            let source: String = env.get_string(&source).map_err(|e| e.to_string())?.into();
+            let backup: String = env.get_string(&backup).map_err(|e| e.to_string())?.into();
+            let target: String = env.get_string(&target).map_err(|e| e.to_string())?.into();
+            let name: String = env.get_string(&name).map_err(|e| e.to_string())?.into();
+            let guard = ENGINE_INSTANCE.read().map_err(|_| "Engine lock unavailable")?;
+            let core = guard.as_ref().ok_or("Engine not initialized")?;
+            match operation.as_str() {
+                "list" => core.list_backups(&source).map(|items| serde_json::json!({"backups": items})),
+                "create" => core.create_backup(&source, &backup).map(|item| serde_json::json!({"backups": [item]})),
+                "restore" => core.restore_backup(&backup, &target, &name).map(|item| serde_json::json!({"environment_id": item.id})),
+                "clone" => core.clone_environment(&source, &target, &name, &backup).map(|item| serde_json::json!({"environment_id": item.id})),
+                _ => return Err("Unknown backup operation".into()),
+            }.map_err(|error| error.to_string())
+        };
+        let value = run().unwrap_or_else(|error| serde_json::json!({"error": error}));
+        create_jstring(&mut env, &value.to_string())
+    })).unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeRunPackageOperation(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: JString,
+    action: JString,
+    query: JString,
+) -> jstring {
+    catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut run = || -> Result<String, String> {
+            let id: String = env.get_string(&id).map_err(|e| e.to_string())?.into();
+            let action: String = env.get_string(&action).map_err(|e| e.to_string())?.into();
+            let query: String = env.get_string(&query).map_err(|e| e.to_string())?.into();
+            let guard = ENGINE_INSTANCE.read().map_err(|_| "Engine lock unavailable")?;
+            let result = guard.as_ref().ok_or("Engine not initialized")?
+                .run_package_operation(&id, &action, &query).map_err(|e| e.to_string())?;
+            serde_json::to_string(&result).map_err(|e| e.to_string())
+        };
+        let json = run().unwrap_or_else(|error| serde_json::json!({"error": error}).to_string());
+        create_jstring(&mut env, &json)
+    })).unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativePackageOperationProgress(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: JString,
+) -> jstring {
+    catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(id) = env.get_string(&id) else { return std::ptr::null_mut() };
+        let id: String = id.into();
+        let Ok(guard) = ENGINE_INSTANCE.read() else { return std::ptr::null_mut() };
+        let Some(progress) = guard.as_ref().and_then(|engine| engine.package_operation_progress(&id)) else {
+            return std::ptr::null_mut();
+        };
+        create_jstring(&mut env, &serde_json::to_string(&progress).unwrap_or_default())
+    })).unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeCancelPackageOperation(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: JString,
+) -> jboolean {
+    catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(id) = env.get_string(&id) else { return false };
+        let id: String = id.into();
+        let Ok(guard) = ENGINE_INSTANCE.read() else { return false };
+        guard.as_ref().is_some_and(|engine| engine.cancel_package_operation(&id))
+    })).unwrap_or(false).into()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeEnvironmentMetrics(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: JString,
+) -> jstring {
+    catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(id) = env.get_string(&id) else { return std::ptr::null_mut() };
+        let id: String = id.into();
+        let Ok(engine) = ENGINE_INSTANCE.read() else { return std::ptr::null_mut() };
+        let Some(metrics) = engine.as_ref().and_then(|core| core.environment_metrics(&id).ok()) else {
+            return std::ptr::null_mut();
+        };
+        create_jstring(&mut env, &serde_json::to_string(&metrics).unwrap_or_default())
+    })).unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeEnvironmentStorageBytes(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: JString,
+) -> jlong {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(id) = env.get_string(&id) else { return -1 };
+        let id: String = id.into();
+        let Ok(engine) = ENGINE_INSTANCE.read() else { return -1 };
+        engine.as_ref().and_then(|core| core.environment_storage_bytes(&id).ok())
+            .and_then(|size| jlong::try_from(size).ok()).unwrap_or(-1)
+    }));
+    result.unwrap_or(-1)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeCancelInstallation(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: JString,
+) -> jboolean {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Ok(id) = env.get_string(&id) else { return false };
+        let id: String = id.into();
+        let Ok(guard) = ENGINE_INSTANCE.read() else { return false };
+        guard.as_ref().is_some_and(|core| core.cancel_installation(&id))
+    }));
+    result.unwrap_or(false).into()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeRecoverEnvironment(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: JString,
+    restart: jboolean,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut run = || -> Result<(), String> {
+            let id: String = env.get_string(&id).map_err(|error| error.to_string())?.into();
+            let guard = ENGINE_INSTANCE.read().map_err(|error| error.to_string())?;
+            guard.as_ref().ok_or("Engine not initialized")?
+                .recover_environment(&id, restart != 0)
+                .map_err(|error| error.to_string())
+        };
+        let error = run().err().unwrap_or_default();
+        create_jstring(&mut env, &error)
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeInstallEnvironment(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: JString,
+    distro: JString,
+    name: JString,
+    memory_mb: jint,
+    archive: JString,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let install = || -> Result<(), String> {
+            let id: String = env.get_string(&id).map_err(|e| e.to_string())?.into();
+            let distro: String = env.get_string(&distro).map_err(|e| e.to_string())?.into();
+            let name: String = env.get_string(&name).map_err(|e| e.to_string())?.into();
+            let archive: String = env.get_string(&archive).map_err(|e| e.to_string())?.into();
+            let guard = ENGINE_INSTANCE.read().map_err(|e| e.to_string())?;
+            let core = guard.as_ref().ok_or("Engine not initialized")?;
+            core.install_environment(&id, &distro, &name, memory_mb as u32, std::path::Path::new(&archive))
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        };
+        let mut install = install;
+        let error = install().err().unwrap_or_default();
+        create_jstring(&mut env, &error)
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeProbeKvmSupport(
     mut env: JNIEnv,
     _class: JClass,
@@ -1735,5 +2233,52 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
         create_jstring(&mut env, mode_str)
     }));
     result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeCreateTerminalForEnvWithShell(
+    mut env: JNIEnv,
+    _class: JClass,
+    session_id: JString,
+    env_id: JString,
+    cols: jint,
+    rows: jint,
+    shell: JString,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid: String = match env.get_string(&session_id) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let eid: String = match env.get_string(&env_id) {
+            Ok(s) => s.into(),
+            Err(_) => String::new(),
+        };
+        let sh: String = match env.get_string(&shell) {
+            Ok(s) => s.into(),
+            Err(_) => String::new(),
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            let opt_eid = if eid.is_empty() { None } else { Some(eid.as_str()) };
+            let opt_sh = if sh.is_empty() { None } else { Some(sh.as_str()) };
+            match core.create_terminal_session_for_env_with_shell(
+                &sid,
+                opt_eid,
+                cols.clamp(20, 300) as u16,
+                rows.clamp(10, 120) as u16,
+                opt_sh,
+            ) {
+                Ok(fd) => fd,
+                Err(_) => -2,
+            }
+        } else {
+            -3
+        }
+    }));
+    result.unwrap_or(-99)
 }
 

@@ -2,6 +2,7 @@ package com.androidpc.environment.bridge
 
 import android.content.Context
 import android.util.Log
+import com.androidpc.environment.BuildConfig
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
@@ -36,12 +37,22 @@ object NativeBridge {
     private external fun nativeGetRecentLogs(limit: Int): String
     private external fun nativeStartDisplayServer(displayNum: Int, width: Int, height: Int, dpi: Int, port: Int): String
     private external fun nativeStopDisplayServer(): Int
+    private external fun nativeStartDesktopSession(envId: String, displayNum: Int, width: Int, height: Int, dpi: Int, port: Int): String
+    private external fun nativeStopDesktopSession(sessionId: String): Int
+    private external fun nativeHasLiveDisplayConnection(): Boolean
+    private external fun nativeGetDesktopStatus(envId: String): String
+    private external fun nativeInstallDesktopProfile(envId: String, profile: String): String
+    private external fun nativeResizeDesktopSession(width: Int, height: Int): Long
+    private external fun nativeSendDisplayClipboard(text: String): Int
+    private external fun nativeTakeDisplayClipboard(): String?
+    private external fun nativeGetDisplayDimensions(): Long
     private external fun nativeIsDisplayRunning(): Boolean
     private external fun nativeCreateTerminal(sessionId: String, cols: Int, rows: Int): Int
     private external fun nativeWriteTerminal(sessionId: String, data: ByteArray): Int
     private external fun nativeReadTerminal(sessionId: String, maxLen: Int): ByteArray
     private external fun nativeResizeTerminal(sessionId: String, cols: Int, rows: Int): Int
     private external fun nativeCloseTerminal(sessionId: String): Int
+    private external fun nativeTerminalExitStatus(sessionId: String): Int
     private external fun nativeRfbBuildPointerEvent(buttonMask: Int, x: Int, y: Int): ByteArray
     private external fun nativeRfbBuildKeyEvent(downFlag: Int, keySym: Long): ByteArray
     private external fun nativeProvisionEnvironment(envId: String, distro: String): Int
@@ -52,6 +63,11 @@ object NativeBridge {
     private external fun nativeGetArtifactInfo(distro: String): String
     private external fun nativeConnectDisplayClient(host: String, port: Int): Long
     private external fun nativeGetFramebuffer(pixelsOut: ByteArray): Int
+    private external fun nativeGetFramebufferDirect(directBuffer: java.nio.ByteBuffer, lastGen: Long): Long
+    private external fun nativeAttachDisplaySurface(surface: android.view.Surface?): Int
+    private external fun nativeDisplayPresenterFailed(): Boolean
+    private external fun nativeDetachDisplaySurface(): Int
+    private external fun nativeGetPresentedFps(): Int
     private external fun nativeSendPointer(buttonMask: Int, x: Int, y: Int): Int
     private external fun nativeSendKey(downFlag: Int, keySym: Long): Int
     private external fun nativeDisconnectDisplayClient(): Int
@@ -71,6 +87,15 @@ object NativeBridge {
     private external fun nativeVerifyArtifact(path: String, expectedSha256: String): Boolean
     private external fun nativeExtractRootfs(archivePath: String, targetDir: String): Long
     private external fun nativeProvisionEnvironmentWithMemory(envId: String, distro: String, memoryMb: Int): Int
+    private external fun nativeInstallEnvironment(envId: String, distro: String, name: String, memoryMb: Int, archive: String): String?
+    private external fun nativeRecoverEnvironment(envId: String, restart: Boolean): String?
+    private external fun nativeCancelInstallation(envId: String): Boolean
+    private external fun nativeEnvironmentStorageBytes(envId: String): Long
+    private external fun nativeRunPackageOperation(envId: String, action: String, query: String): String?
+    private external fun nativePackageOperationProgress(envId: String): String?
+    private external fun nativeCancelPackageOperation(envId: String): Boolean
+    private external fun nativeBackupOperation(operation: String, source: String, backup: String, target: String, name: String): String?
+    private external fun nativeEnvironmentMetrics(envId: String): String?
     private external fun nativeProbeKvmSupport(): String
     private external fun nativeCreateVm(vmId: String, arch: String, memoryMb: Int, cpus: Int, diskSizeMb: Int): Int
     private external fun nativeStartVm(vmId: String): Int
@@ -80,6 +105,7 @@ object NativeBridge {
     private external fun nativeCreateTerminalForEnv(sessionId: String, envId: String, cols: Int, rows: Int): Int
     private external fun nativeSetGpuAccelerationMode(mode: String): Int
     private external fun nativeGetGpuAccelerationMode(): String
+    private external fun nativeCreateTerminalForEnvWithShell(sessionId: String, envId: String, cols: Int, rows: Int, shell: String): Int
 
     suspend fun initEngine(context: Context): Result<Int> = withContext(Dispatchers.IO) {
         if (!isLoaded) {
@@ -88,15 +114,26 @@ object NativeBridge {
 
         try {
             val baseData = context.filesDir.absolutePath
-            val artifacts = AssetInstaller.installBundledAssets(context).absolutePath
+            val artifactsDir = AssetInstaller.installBundledAssets(context)
+            val rootfsKey = BuildConfig.ROOTFS_PUBLIC_KEY_HEX.takeIf(String::isNotEmpty)
+            if (rootfsKey != null) {
+                val rootfsDir = File(artifactsDir, "rootfs").apply { mkdirs() }
+                for (name in listOf("catalog.json", "catalog.sig")) {
+                    context.assets.open("rootfs/$name").use { input ->
+                        File(rootfsDir, name).outputStream().use { input.copyTo(it) }
+                    }
+                }
+            }
             val tmp = File(context.cacheDir, "tmp").apply { mkdirs() }.absolutePath
 
             val config = EngineConfigData(
                 base_data_dir = baseData,
-                runtime_artifacts_dir = artifacts,
+                runtime_artifacts_dir = artifactsDir.absolutePath,
                 temporary_dir = tmp,
                 native_lib_dir = context.applicationInfo.nativeLibraryDir,
-                debug_mode = true,
+                trusted_rootfs_key_hex = rootfsKey,
+                app_version_code = BuildConfig.VERSION_CODE,
+                debug_mode = BuildConfig.DEBUG,
                 log_level = "info",
                 max_concurrent_processes = 32
             )
@@ -218,6 +255,99 @@ object NativeBridge {
         }
     }
 
+    suspend fun startDesktopSession(
+        envId: String,
+        displayNum: Int = 1,
+        width: Int = 1280,
+        height: Int = 720,
+        dpi: Int = 160,
+        port: Int = 5901
+    ): Result<DisplayEndpointData> = withContext(Dispatchers.IO) {
+        if (!isLoaded) {
+            return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        }
+        try {
+            val raw = nativeStartDesktopSession(envId, displayNum, width, height, dpi, port)
+            if (raw.contains("\"error\"")) {
+                Result.failure(RuntimeException(raw))
+            } else {
+                Result.success(gson.fromJson(raw, DisplayEndpointData::class.java))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "nativeStartDesktopSession failed: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun stopDesktopSession(sessionId: String): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val code = nativeStopDesktopSession(sessionId)
+            if (code == 0) Result.success(0) else Result.failure(RuntimeException("Stop desktop error $code"))
+        } catch (e: Exception) {
+            Log.e(TAG, "nativeStopDesktopSession failed: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    fun hasLiveDisplayConnection(): Boolean = isLoaded && nativeHasLiveDisplayConnection()
+
+    suspend fun getDesktopStatus(envId: String): String = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext "{\"error\":\"Engine not loaded\"}"
+        try {
+            nativeGetDesktopStatus(envId)
+        } catch (e: Exception) {
+            "{\"error\":\"${e.message}\"}"
+        }
+    }
+
+    suspend fun installDesktopProfile(envId: String, profile: String = "minimal"): String = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext "{\"error\":\"Engine not loaded\"}"
+        try {
+            nativeInstallDesktopProfile(envId, profile)
+        } catch (e: Exception) {
+            "{\"error\":\"${e.message}\"}"
+        }
+    }
+
+    suspend fun resizeDesktopSession(width: Int, height: Int): Pair<Int, Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Pair(0, 0)
+        try {
+            val packed = nativeResizeDesktopSession(width, height)
+            Pair((packed ushr 32).toInt(), (packed and 0xffffffffL).toInt())
+        } catch (_: Exception) {
+            Pair(0, 0)
+        }
+    }
+
+    fun sendDisplayClipboard(text: String): Int {
+        if (!isLoaded) return -1
+        return try {
+            nativeSendDisplayClipboard(text)
+        } catch (_: Exception) {
+            -1
+        }
+    }
+
+    fun takeDisplayClipboard(): String? {
+        if (!isLoaded) return null
+        return try {
+            nativeTakeDisplayClipboard()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun getDisplayDimensions(): Pair<Int, Int> {
+        if (!isLoaded) return Pair(0, 0)
+        return try {
+            val packed = nativeGetDisplayDimensions()
+            Pair((packed ushr 32).toInt(), (packed and 0xffffffffL).toInt())
+        } catch (_: Exception) {
+            Pair(0, 0)
+        }
+    }
+
     fun isDisplayRunning(): Boolean {
         if (!isLoaded) return false
         return try {
@@ -265,6 +395,10 @@ object NativeBridge {
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    suspend fun terminalExitStatus(sessionId: String): Int = withContext(Dispatchers.IO) {
+        if (isLoaded) nativeTerminalExitStatus(sessionId) else -2
     }
 
     suspend fun closeTerminal(sessionId: String): Result<Int> = withContext(Dispatchers.IO) {
@@ -384,6 +518,45 @@ object NativeBridge {
             nativeGetFramebuffer(pixelsOut)
         } catch (e: Exception) {
             -1
+        }
+    }
+
+    fun getFramebufferDirect(directBuffer: java.nio.ByteBuffer, lastGen: Long): Long {
+        if (!isLoaded) return -1L
+        return try {
+            nativeGetFramebufferDirect(directBuffer, lastGen)
+        } catch (e: Exception) {
+            -1L
+        }
+    }
+
+    fun attachDisplaySurface(surface: android.view.Surface?): Int {
+        if (!isLoaded) return -1
+        return try {
+            nativeAttachDisplaySurface(surface)
+        } catch (e: Exception) {
+            Log.e(TAG, "nativeAttachDisplaySurface failed: ${e.message}", e)
+            -1
+        }
+    }
+
+    fun detachDisplaySurface(): Int {
+        if (!isLoaded) return -1
+        return try {
+            nativeDetachDisplaySurface()
+        } catch (_: Exception) {
+            -1
+        }
+    }
+
+    fun displayPresenterFailed(): Boolean = isLoaded && nativeDisplayPresenterFailed()
+
+    fun getPresentedFps(): Int {
+        if (!isLoaded) return 0
+        return try {
+            nativeGetPresentedFps()
+        } catch (_: Exception) {
+            0
         }
     }
 
@@ -576,6 +749,66 @@ object NativeBridge {
         }
     }
 
+    suspend fun installEnvironment(envId: String, distro: String, memoryMb: Int, archive: File, name: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                check(isLoaded) { "Native engine not loaded" }
+                val error = nativeInstallEnvironment(envId, distro, name, memoryMb, archive.absolutePath)
+                    ?: error("Native installation failed unexpectedly")
+                check(error.isEmpty()) { error }
+            }
+        }
+
+    suspend fun recoverEnvironment(envId: String, restart: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            check(isLoaded) { "Native engine not loaded" }
+            val error = nativeRecoverEnvironment(envId, restart) ?: error("Environment operation failed")
+            check(error.isEmpty()) { error }
+        }
+    }
+
+    suspend fun cancelInstallation(envId: String): Boolean = withContext(Dispatchers.IO) {
+        isLoaded && nativeCancelInstallation(envId)
+    }
+
+    suspend fun environmentStorageBytes(envId: String): Long? = withContext(Dispatchers.IO) {
+        if (isLoaded) nativeEnvironmentStorageBytes(envId).takeIf { it >= 0 } else null
+    }
+
+    suspend fun environmentMetrics(envId: String): EnvironmentMetricsData? = withContext(Dispatchers.IO) {
+        if (isLoaded) nativeEnvironmentMetrics(envId)?.let { gson.fromJson(it, EnvironmentMetricsData::class.java) } else null
+    }
+
+    suspend fun runPackageOperation(envId: String, action: String, query: String): Result<PackageOperationData> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                check(isLoaded) { "Native engine not loaded" }
+                val json = nativeRunPackageOperation(envId, action, query) ?: error("Package operation failed")
+                val result = gson.fromJson(json, PackageOperationData::class.java)
+                result.error?.let { error(it) }
+                result
+            }
+        }
+
+    suspend fun packageOperationProgress(envId: String): PackageOperationData? = withContext(Dispatchers.IO) {
+        if (!isLoaded) null else nativePackageOperationProgress(envId)?.let { gson.fromJson(it, PackageOperationData::class.java) }
+    }
+
+    suspend fun cancelPackageOperation(envId: String): Boolean = withContext(Dispatchers.IO) {
+        isLoaded && nativeCancelPackageOperation(envId)
+    }
+
+    suspend fun backupOperation(operation: String, source: String = "", backup: String = "", target: String = "", name: String = ""): Result<BackupOperationData> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                check(isLoaded) { "Native engine not loaded" }
+                val json = nativeBackupOperation(operation, source, backup, target, name) ?: error("Backup operation failed")
+                val result = gson.fromJson(json, BackupOperationData::class.java)
+                result.error?.let { error(it) }
+                result
+            }
+        }
+
     suspend fun provisionEnvironmentWithMemory(envId: String, distro: String, memoryMb: Int): Result<Int> = withContext(Dispatchers.IO) {
         if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
         try {
@@ -657,10 +890,10 @@ object NativeBridge {
         }
     }
 
-    suspend fun createTerminalForEnv(sessionId: String, envId: String, cols: Int = 80, rows: Int = 24): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun createTerminalForEnv(sessionId: String, envId: String, cols: Int = 80, rows: Int = 24, shell: String = "/bin/bash"): Result<Int> = withContext(Dispatchers.IO) {
         if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
         try {
-            val fd = nativeCreateTerminalForEnv(sessionId, envId, cols, rows)
+            val fd = nativeCreateTerminalForEnvWithShell(sessionId, envId, cols, rows, shell)
             if (fd >= 0) Result.success(fd) else Result.failure(RuntimeException("Create terminal failed ($fd)"))
         } catch (e: Exception) {
             Result.failure(e)

@@ -1,0 +1,11 @@
+# Android native rendering
+
+**Confirmed.** Android supplies an acquired ANativeWindow reference for a Java Surface. The Rust presenter releases it when its thread exits, including when thread creation fails. For each dirty RFB generation it sets geometry when required, locks a compatible RGBA buffer, copies by stride, and posts. Every successful native lock has a matching post. The engine and RFB locks are free while the native window waits or posts. [Native Window reference](https://developer.android.com/ndk/reference/group/a-native-window) · [Presenter source](../../rust/crates/android-bridge/src/native_display.rs)
+
+The SurfaceView binds a producer to each surface creation. Android destruction invalidates the Canvas producer and waits for any active Canvas transfer. Native detach joins its producer before the callback returns. A coroutine mutex serializes the native and Canvas backends. Native initialization or buffer failure selects the Canvas presenter. The toolbar also allows explicit selection for diagnostics. Android owns BufferQueue handoff and composition. A reported native submission is a producer event. SurfaceFlinger data measures actual presentations. [SurfaceHolder callbacks](https://developer.android.com/reference/android/view/SurfaceHolder.Callback) · [Presentation measurement](https://developer.android.com/games/optimize/framerate)
+
+**Confirmed.** The public NDK alternatives include EGL window surfaces, OpenGL ES texture uploads and AHardwareBuffer import, and Vulkan Android surfaces. For this RFB producer compressed or raw network pixels are decoded to a CPU framebuffer. A GPU backend would still need transfer or shared allocation and fences. The native CPU path keeps its single framebuffer-to-buffer copy and introduces no graphics dependency. [AHardwareBuffer reference](https://developer.android.com/ndk/reference/group/a-hardware-buffer)
+
+**Hypothesis.** A GPU implementation is worthwhile if profiles isolate CPU memory traffic or compositor pacing as a primary cost. A partial-damage design must account for rotating buffers and prior damage before it can safely skip rows.
+
+**Unknown.** Comparative EGL upload and Vulkan timings, API 26 vendor behavior and hardware input-to-photon measurements are open.

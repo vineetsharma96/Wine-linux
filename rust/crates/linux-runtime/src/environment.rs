@@ -81,40 +81,66 @@ impl ProotEnvironmentManager {
         &self.config
     }
 
-    pub fn setup_networking_and_userspace(&self) -> Result<(), RuntimeError> {
-        let rootfs = &self.config.rootfs_directory;
-        let etc_dir = rootfs.join("etc");
-        std::fs::create_dir_all(&etc_dir)?;
+    pub fn set_last_started(&mut self, timestamp: Option<u64>) {
+        self.config.last_started_at_epoch_ms = timestamp;
+    }
 
-        std::fs::write(
-            etc_dir.join("resolv.conf"),
+    pub fn setup_networking_and_userspace(&self) -> Result<(), RuntimeError> {
+        let rootfs = self.config.rootfs_directory.canonicalize()?;
+        let create_guest_dir = |relative: &str| -> Result<std::path::PathBuf, RuntimeError> {
+            let mut dir = rootfs.clone();
+            for part in std::path::Path::new(relative).components() {
+                dir.push(part);
+                match std::fs::symlink_metadata(&dir) {
+                    Ok(metadata) if metadata.is_dir() => {}
+                    Ok(_) => return Err(RuntimeError::InitializationFailed(format!(
+                        "Unsafe directory in guest setup: {relative}"
+                    ))),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&dir)?,
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Ok(dir)
+        };
+        let write_guest_file = |dir: &std::path::Path, name: &str, contents: &str| -> Result<(), RuntimeError> {
+            let path = dir.join(name);
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_symlink() => std::fs::remove_file(&path)?,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            std::fs::write(path, contents)?;
+            Ok(())
+        };
+        let etc_dir = create_guest_dir("etc")?;
+
+        write_guest_file(
+            &etc_dir,
+            "resolv.conf",
             "nameserver 8.8.8.8\nnameserver 1.1.1.1\n",
         )?;
-        std::fs::write(
-            etc_dir.join("hosts"),
+        write_guest_file(
+            &etc_dir,
+            "hosts",
             "127.0.0.1 localhost android-pc\n::1 localhost\n",
         )?;
-        std::fs::write(etc_dir.join("hostname"), "android-pc\n")?;
-
-        let tmp_dir = rootfs.join("tmp");
-        std::fs::create_dir_all(&tmp_dir)?;
+        write_guest_file(&etc_dir, "hostname", "android-pc\n")?;
+        create_guest_dir("tmp")?;
 
         // Ensure emulated /dev/shm and PRoot temp directory exist
-        std::fs::create_dir_all(rootfs.join("dev").join("shm"))?;
-        std::fs::create_dir_all(rootfs.join("var").join("tmp"))?;
+        create_guest_dir("dev/shm")?;
+        create_guest_dir("var/tmp")?;
 
-        let home_user_dir = rootfs.join("home").join(&self.config.default_username);
-        std::fs::create_dir_all(&home_user_dir)?;
+        create_guest_dir(&format!("home/{}", self.config.default_username))?;
 
         // Provision startxfce.sh helper inside guest userspace
-        let local_bin = rootfs.join("usr").join("local").join("bin");
-        std::fs::create_dir_all(&local_bin)?;
-        let xfce_script = local_bin.join("startxfce.sh");
-        std::fs::write(&xfce_script, START_XFCE_SCRIPT)?;
+        let local_bin = create_guest_dir("usr/local/bin")?;
+        write_guest_file(&local_bin, "startxfce.sh", START_XFCE_SCRIPT)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&xfce_script, std::fs::Permissions::from_mode(0o755));
+            std::fs::set_permissions(local_bin.join("startxfce.sh"), std::fs::Permissions::from_mode(0o755))?;
         }
 
         info!("Network and userspace configured for rootfs at {:?}", rootfs);
@@ -122,11 +148,7 @@ impl ProotEnvironmentManager {
     }
 
     pub fn is_running(&self) -> bool {
-        if let Some(pid) = self.active_process_id {
-            self.supervisor.is_alive(pid)
-        } else {
-            false
-        }
+        self.supervisor.list_processes().iter().any(|process| process.running)
     }
 
     pub fn active_pid(&self) -> Option<ProcessId> {
@@ -186,6 +208,71 @@ impl ProotEnvironmentManager {
         self.execute_guest_command_with_env(command, &[])
     }
 
+    pub fn verify_guest(&self, distribution: &str) -> Result<String, RuntimeError> {
+        self.verify_guest_identity(distribution, false)
+    }
+
+    pub fn verify_and_provision_guest(&self, distribution: &str, expected_version: &str) -> Result<String, RuntimeError> {
+        let ubuntu = distribution == "ubuntu";
+        let version = self.verify_guest_identity(distribution, ubuntu)?;
+        if version != expected_version {
+            return Err(RuntimeError::InitializationFailed(
+                format!("Guest release {version} differs from expected release {expected_version}"),
+            ));
+        }
+        if ubuntu {
+            crate::apt_sources::configure_ports(&self.config.rootfs_directory)?;
+        }
+        Ok(version)
+    }
+
+    fn verify_guest_identity(&self, distribution: &str, require_codename: bool) -> Result<String, RuntimeError> {
+        let command = [
+            "/bin/sh".to_string(),
+            "-ec".to_string(),
+            "dpkg --print-architecture; cat /etc/os-release; apt --version; /usr/bin/env true".to_string(),
+        ];
+        let output = std::process::Command::new(self.provider.proot_binary())
+            .args(self.provider.build_proot_command(&self.config, &command))
+            .env_clear()
+            .envs(self.build_guest_env(&[]))
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(RuntimeError::InitializationFailed(format!(
+                "Guest health check failed ({}): {}", output.status,
+                stderr.chars().take(750).collect::<String>()
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let os_field = |key: &str| {
+            stdout.lines().filter_map(|line| line.split_once('='))
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| value.trim_matches('"'))
+        };
+        if stdout.lines().next() != Some("arm64") || os_field("ID") != Some(distribution) {
+            return Err(RuntimeError::InitializationFailed("Unexpected guest architecture or distribution".into()));
+        }
+        if require_codename && !os_field("VERSION_CODENAME").is_some_and(|codename| {
+            !codename.is_empty() && codename.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        }) {
+            return Err(RuntimeError::InitializationFailed("Ubuntu release has no valid VERSION_CODENAME".into()));
+        }
+        os_field("VERSION_ID").filter(|version| !version.is_empty()).map(str::to_owned)
+            .ok_or_else(|| RuntimeError::InitializationFailed("Guest release is missing VERSION_ID".into()))
+    }
+
+    pub fn repair_guest(&mut self) -> Result<(), RuntimeError> {
+        self.state = EnvironmentState::Recovering;
+        let result = (|| {
+            self.setup_networking_and_userspace()?;
+            self.verify_and_provision_guest(&self.config.distribution, &self.config.version)?;
+            Ok(())
+        })();
+        self.state = if result.is_ok() { EnvironmentState::Stopped } else { EnvironmentState::Failed };
+        result
+    }
+
     pub fn execute_guest_command_with_env(
         &mut self,
         command: &[String],
@@ -231,6 +318,9 @@ impl EnvironmentManager for ProotEnvironmentManager {
     }
 
     fn start(&mut self) -> Result<(), RuntimeError> {
+        if self.is_running() {
+            return Ok(());
+        }
         info!("Starting environment '{}' (launching default shell)", self.config.id);
         self.execute_guest_command(&[])?;
         Ok(())
@@ -238,9 +328,8 @@ impl EnvironmentManager for ProotEnvironmentManager {
 
     fn stop(&mut self) -> Result<(), RuntimeError> {
         info!("Stopping environment '{}'", self.config.id);
-        if let Some(pid) = self.active_process_id.take() {
-            let _ = self.supervisor.send_signal(pid, androidpc_runtime_api::Signal::Term);
-        }
+        self.supervisor.terminate_all()?;
+        self.active_process_id = None;
         self.state = EnvironmentState::Stopped;
         Ok(())
     }

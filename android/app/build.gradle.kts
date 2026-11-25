@@ -4,9 +4,12 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val rootfsReleaseKey = providers.environmentVariable("ANDROIDPC_ROOTFS_PUBLIC_KEY_HEX").orElse("")
+
 android {
     namespace = "com.androidpc.environment"
     compileSdk = 35
+    ndkVersion = "30.0.16248370"
 
     defaultConfig {
         applicationId = "com.androidpc.environment"
@@ -14,11 +17,13 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0-alpha.0"
+        val publicKey = rootfsReleaseKey.get().takeIf { it.matches(Regex("[0-9a-fA-F]{64}")) }.orEmpty()
+        buildConfigField("String", "ROOTFS_PUBLIC_KEY_HEX", "\"" + publicKey + "\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
+            abiFilters.add("arm64-v8a")
         }
     }
 
@@ -47,13 +52,40 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("src/main/jniLibs")
         }
+        if (rootfsReleaseKey.get().isNotBlank()) {
+            getByName("debug").assets.srcDir("src/release/assets")
+        }
     }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+tasks.register("verifyReleaseRootfsInputs") {
+    doLast {
+        check(rootfsReleaseKey.get().matches(Regex("[0-9a-fA-F]{64}"))) {
+            "Set ANDROIDPC_ROOTFS_PUBLIC_KEY_HEX to the trusted release Ed25519 public key"
+        }
+        val rootfsAssets = layout.projectDirectory.dir("src/release/assets/rootfs")
+        check(rootfsAssets.file("catalog.json").asFile.isFile &&
+            rootfsAssets.file("catalog.sig").asFile.length() == 64L) {
+            "Stage the signed release catalog in src/release/assets/rootfs"
+        }
+    }
+}
+
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn("verifyReleaseRootfsInputs")
 }
 
 dependencies {

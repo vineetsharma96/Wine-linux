@@ -108,4 +108,34 @@ impl DownloadManager {
 
         Ok(destination_path.to_path_buf())
     }
+
+    /// Verifies an existing `.part` file on disk against `expected_sha256` (if non-empty and not all zeros)
+    /// and atomically renames it to `destination_path`.
+    pub fn verify_and_commit_part(
+        part_path: &Path,
+        destination_path: &Path,
+        expected_sha256: &str,
+    ) -> Result<PathBuf, DownloaderError> {
+        let expected_normalized = expected_sha256.trim().to_lowercase();
+        let enforce_hash = !expected_normalized.is_empty()
+            && !expected_normalized.chars().all(|c| c == '0');
+
+        if enforce_hash {
+            let computed = Sha256Verifier::hash_file(part_path)?;
+            if computed != expected_normalized {
+                let _ = std::fs::remove_file(part_path);
+                return Err(DownloaderError::ChecksumMismatch {
+                    file: destination_path.display().to_string(),
+                    expected: expected_normalized,
+                    actual: computed,
+                });
+            }
+        }
+
+        if let Some(parent) = destination_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(part_path, destination_path)?;
+        Ok(destination_path.to_path_buf())
+    }
 }

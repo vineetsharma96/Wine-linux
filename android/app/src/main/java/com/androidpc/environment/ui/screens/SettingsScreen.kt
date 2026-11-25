@@ -15,6 +15,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.androidpc.environment.bridge.AudioStatusData
+import com.androidpc.environment.bridge.EnvironmentConfigData
 import com.androidpc.environment.bridge.LogEntryData
 import com.androidpc.environment.bridge.NativeBridge
 import com.androidpc.environment.ui.theme.*
@@ -26,10 +27,15 @@ fun SettingsScreen(
     audioEnabled: Boolean,
     wineArch: String,
     gpuMode: String = "software",
+    environments: List<EnvironmentConfigData> = emptyList(),
+    defaultEnvId: String = "",
+    defaultShell: String = "/bin/bash",
     onResolutionChange: (Pair<Int, Int>) -> Unit,
     onAudioEnabledChange: (Boolean) -> Unit,
     onWineArchChange: (String) -> Unit,
     onGpuModeChange: (String) -> Unit = {},
+    onDefaultEnvChange: (String) -> Unit = {},
+    onDefaultShellChange: (String) -> Unit = {},
     onBack: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -74,6 +80,56 @@ fun SettingsScreen(
                 }
                 TextButton(onClick = refreshSettingsTelemetry) {
                     Text("Refresh", color = AccentCyan)
+                }
+            }
+        }
+
+        // Default Environment & Shell Preferences
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, CardBorder, RoundedCornerShape(10.dp)),
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Default Linux Environment & Shell", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                    Text("Default environment", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    if (environments.isEmpty()) {
+                        Text("No installed environments", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+                    } else {
+                        environments.forEach { env ->
+                            val selected = defaultEnvId == env.id
+                            val label = (env.display_name ?: env.distribution.replaceFirstChar(Char::uppercase)) +
+                                " (${env.version} · ${env.id.take(8)})"
+                            OutlinedButton(
+                                onClick = { onDefaultEnvChange(env.id) },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (selected) AccentCyan.copy(alpha = 0.2f) else SurfaceContainer
+                                ),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(label, color = if (selected) AccentCyan else TextSecondary, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                    Text("Default terminal shell", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("/bin/bash", "/bin/sh").forEach { sh ->
+                            val selected = defaultShell == sh
+                            OutlinedButton(
+                                onClick = { onDefaultShellChange(sh) },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (selected) AccentCyan.copy(alpha = 0.2f) else SurfaceContainer
+                                ),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(sh, color = if (selected) AccentCyan else TextSecondary, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
                 }
             }
         }

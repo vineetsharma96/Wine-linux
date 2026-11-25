@@ -7,6 +7,8 @@
 
 ## 1. Critical Gate Result: PASSED
 
+The full APK → JNI → Rust → PRoot → interactive PTY path also passed on this device. The debug app downloaded and installed Ubuntu 26.04.1 LTS and Debian 13.8 from a test-signed catalog. In both app terminals, `uname -m` returned `aarch64` and `exit 7` produced the matching exit status. Ubuntu's `apt --version` reported 3.2.0 and Debian's reported 3.0.4, both for ARM64. Earlier instrumentation measured a 96×34 PTY after resize with the older fixture archives. One Android 16 model has been exercised.
+
 PRoot (`5.1.107.102`, Termux Android build with `process_vm = yes, seccomp_filter = yes`) executes **without root** inside the standalone `com.androidpc.environment.debug` application sandbox (`uid=10768(u0_a768)`, `context=u:r:runas_app:s0:c0,c259,c512,c768`).
 
 ### Key Technical Constraints & Solutions Discovered

@@ -48,22 +48,29 @@ fun SystemInfoScreen(
             modifier = Modifier.fillMaxSize()
         ) {
             item {
-                DiagCard("Engine Architecture", diagnostics?.host_arch ?: "aarch64")
+                DiagCard("Engine Architecture", diagnostics?.host_arch ?: "Checking")
             }
             item {
-                DiagCard("Engine Version", diagnostics?.engine_version ?: "0.1.0-alpha.0")
+                DiagCard("Engine Version", diagnostics?.engine_version ?: "Checking")
             }
             item {
-                DiagCard("Operating System Target", diagnostics?.target_os ?: "android")
+                DiagCard("Android Version", diagnostics?.android_release ?: "Checking")
             }
             item {
-                DiagCard("Rootless PTrace Supported", if (diagnostics?.rootless_ptrace_supported == true) "Yes (Verified)" else "Simulated")
+                DiagCard("Rootless Guest Check", diagnostics?.last_guest_check_epoch_ms?.let {
+                    java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it))
+                } ?: "Waiting for a verified install")
             }
             item {
                 DiagCard("Seccomp Restricted", if (diagnostics?.seccomp_restricted == true) "Active (App Sandbox)" else "Unrestricted")
             }
             item {
-                DiagCard("PRoot Compatibility", if (diagnostics?.proot_ready == true) "Ready for Phase 1 Rootfs" else "Pending")
+                DiagCard("PRoot Version", diagnostics?.proot_version ?: "Unavailable")
+            }
+            item {
+                val mib = 1024L * 1024L
+                DiagCard("Available Storage", diagnostics?.available_storage_bytes?.let { "${it / mib} MiB" } ?: "Checking")
+                DiagCard("Engine Memory", diagnostics?.memory_allocated_bytes?.let { "${it / mib} MiB" } ?: "Checking")
             }
             item {
                 DiagCard("Active Processes", "${diagnostics?.active_processes_count ?: 0}")

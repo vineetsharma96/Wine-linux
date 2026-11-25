@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -14,13 +15,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.androidpc.environment.bridge.ArtifactMetadataData
 import com.androidpc.environment.bridge.NativeBridge
+import com.androidpc.environment.bridge.downloadRootfs
 import com.androidpc.environment.ui.theme.*
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
+import java.util.UUID
 
 @Composable
 fun CreateEnvironmentScreen(
@@ -28,9 +31,9 @@ fun CreateEnvironmentScreen(
     onCreated: (String) -> Unit
 ) {
     val context = LocalContext.current
-    var selectedDistro by remember { mutableStateOf("ubuntu") }
-    var downloadRootfsArchive by remember { mutableStateOf(false) }
-    var memoryMb by remember { mutableFloatStateOf(2048f) }
+    var selectedDistro by rememberSaveable { mutableStateOf("ubuntu") }
+    var environmentName by rememberSaveable { mutableStateOf("") }
+    val envId = rememberSaveable { UUID.randomUUID().toString() }
     var artifactInfo by remember { mutableStateOf<ArtifactMetadataData?>(null) }
 
     var isDeploying by remember { mutableStateOf(false) }
@@ -38,12 +41,38 @@ fun CreateEnvironmentScreen(
     var deployProgress by remember { mutableFloatStateOf(0f) }
     var isSuccess by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var downloadJob by remember { mutableStateOf<Job?>(null) }
+    var nativeInstalling by remember { mutableStateOf(false) }
+    var cancelling by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(selectedDistro) {
-        val res = NativeBridge.getArtifactInfo(selectedDistro)
-        res.onSuccess { artifactInfo = it }
+        artifactInfo = null
+        errorMessage = null
+        NativeBridge.getArtifactInfo(selectedDistro)
+            .onSuccess { artifactInfo = it }
+            .onFailure { errorMessage = it.message }
+    }
+
+    LaunchedEffect(nativeInstalling, envId) {
+        while (nativeInstalling && isActive) {
+            when (NativeBridge.getEnvironmentState(envId)) {
+                "Verifying" -> {
+                    deployStage = "Verifying archive"
+                    deployProgress = 0.78f
+                }
+                "Extracting" -> {
+                    deployStage = "Extracting Linux filesystem"
+                    deployProgress = 0.85f
+                }
+                "Initializing" -> {
+                    deployStage = "Checking the Linux guest"
+                    deployProgress = 0.95f
+                }
+            }
+            delay(100)
+        }
     }
 
     Column(
@@ -67,23 +96,34 @@ fun CreateEnvironmentScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        OutlinedTextField(
+            value = environmentName,
+            onValueChange = { if (it.length <= 80) environmentName = it },
+            label = { Text("Environment name") },
+            placeholder = { Text(if (selectedDistro == "ubuntu") "Ubuntu" else "Debian") },
+            enabled = !isDeploying && !isSuccess,
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+
         Text("SELECT DISTRIBUTION", style = MaterialTheme.typography.labelSmall, color = TextMuted)
         Spacer(modifier = Modifier.height(8.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             DistroOption(
-                title = "Ubuntu 24.04",
-                subtitle = "Noble Numbat (ARM64)",
+                title = "Ubuntu",
+                subtitle = "26.04.1 LTS • Single catalog release",
                 isSelected = selectedDistro == "ubuntu",
-                enabled = !isDeploying,
+                enabled = !isDeploying && !isSuccess,
                 modifier = Modifier.weight(1f)
             ) { selectedDistro = "ubuntu" }
 
             DistroOption(
-                title = "Debian 12",
-                subtitle = "Bookworm (ARM64)",
+                title = "Debian",
+                subtitle = "13.8 • Single catalog release",
                 isSelected = selectedDistro == "debian",
-                enabled = !isDeploying,
+                enabled = !isDeploying && !isSuccess,
                 modifier = Modifier.weight(1f)
             ) { selectedDistro = "debian" }
         }
@@ -108,6 +148,11 @@ fun CreateEnvironmentScreen(
                     Spacer(modifier = Modifier.height(6.dp))
                     Text("Archive: ${meta.filename}", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
                     Text(
+                        text = "Release: ${meta.distribution.replaceFirstChar(Char::uppercase)} (single signed release in catalog)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
+                    Text(
                         text = "Size: ${meta.size_bytes / (1024 * 1024)} MB | Arch: ${meta.architecture}",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary
@@ -122,46 +167,6 @@ fun CreateEnvironmentScreen(
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(SurfaceDark, RoundedCornerShape(10.dp))
-                .border(1.dp, CardBorder, RoundedCornerShape(10.dp))
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Fetch Remote Rootfs Tarball", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-                Text(
-                    "Stream HTTPS archive to .part, verify SHA-256 & unpack",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary
-                )
-            }
-            Switch(
-                checked = downloadRootfsArchive,
-                onCheckedChange = { downloadRootfsArchive = it },
-                enabled = !isDeploying
-            )
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        Text("MEMORY LIMIT: ${memoryMb.toInt()} MB", style = MaterialTheme.typography.labelSmall, color = TextMuted)
-        Slider(
-            value = memoryMb,
-            onValueChange = { memoryMb = it },
-            valueRange = 512f..8192f,
-            steps = 14,
-            enabled = !isDeploying,
-            colors = SliderDefaults.colors(
-                thumbColor = AccentCyan,
-                activeTrackColor = AccentCyan,
-                inactiveTrackColor = SurfaceContainer
-            )
-        )
 
         if (isDeploying || isSuccess) {
             Spacer(modifier = Modifier.height(12.dp))
@@ -194,7 +199,15 @@ fun CreateEnvironmentScreen(
                         trackColor = BgDark
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(deployStage, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Text(if (cancelling) "Cancelling installation…" else deployStage, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    downloadJob?.let { job ->
+                        TextButton(onClick = { job.cancel() }) { Text("Cancel download") }
+                    }
+                    if (nativeInstalling && !cancelling) {
+                        TextButton(onClick = {
+                            coroutineScope.launch { cancelling = NativeBridge.cancelInstallation(envId) }
+                        }) { Text("Cancel installation") }
+                    }
                 }
             }
         }
@@ -208,97 +221,55 @@ fun CreateEnvironmentScreen(
 
         if (isSuccess) {
             Button(
-                onClick = { onCreated(selectedDistro) },
+                onClick = { onCreated(envId) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(50.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = StatusGreen),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text("Launch Desktop Viewport", color = BgDark, fontWeight = FontWeight.Bold)
+                Text("Open Linux Terminal", color = BgDark, fontWeight = FontWeight.Bold)
             }
         } else {
             Button(
                 onClick = {
+                    val meta = artifactInfo ?: return@Button
                     isDeploying = true
                     errorMessage = null
-                    val envId = "env-$selectedDistro"
-                    coroutineScope.launch {
+                    deployProgress = 0f
+                    downloadJob = coroutineScope.launch {
+                        val partFile = File(context.cacheDir, meta.filename + ".part")
                         try {
-                            deployStage = "1/3 Provisioning sandbox directory & rootfs config..."
-                            deployProgress = 0.25f
-                            val provRes = NativeBridge.provisionEnvironmentWithMemory(envId, selectedDistro, memoryMb.toInt())
-                            if (provRes.isFailure) {
-                                errorMessage = provRes.exceptionOrNull()?.message
-                                isDeploying = false
-                                return@launch
+                            check(android.os.Build.SUPPORTED_ABIS.contains("arm64-v8a")) {
+                                "This Linux runtime requires an ARM64 device"
                             }
-
-                            if (downloadRootfsArchive && artifactInfo != null) {
-                                val meta = artifactInfo!!
-                                deployStage = "2/3 Downloading ${meta.filename}..."
-                                deployProgress = 0.45f
-                                val partFile = File(context.cacheDir, "${meta.filename}.part")
-                                val downloadedOk = withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        val conn = URL(meta.url).openConnection() as HttpURLConnection
-                                        conn.connectTimeout = 10_000
-                                        conn.readTimeout = 30_000
-                                        conn.inputStream.use { input ->
-                                            partFile.outputStream().use { out ->
-                                                val buf = ByteArray(64 * 1024)
-                                                var total = 0L
-                                                while (true) {
-                                                    val n = input.read(buf)
-                                                    if (n <= 0) break
-                                                    out.write(buf, 0, n)
-                                                    total += n
-                                                    if (meta.size_bytes > 0) {
-                                                        val frac = (total.toFloat() / meta.size_bytes.toFloat()).coerceIn(0f, 1f)
-                                                        deployProgress = 0.45f + frac * 0.35f
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                if (downloadedOk.isSuccess) {
-                                    deployStage = "3/3 Verifying SHA-256 & extracting rootfs..."
-                                    deployProgress = 0.85f
-                                    val enforceSha = meta.sha256.isNotBlank() && !meta.sha256.all { it == '0' }
-                                    val verified = if (enforceSha) {
-                                        NativeBridge.verifyArtifact(partFile.absolutePath, meta.sha256).getOrDefault(false)
-                                    } else {
-                                        true
-                                    }
-                                    if (!verified) {
-                                        partFile.delete()
-                                        errorMessage = "SHA-256 checksum verification failed for ${meta.filename}"
-                                        isDeploying = false
-                                        return@launch
-                                    }
-                                    val rootfsDir = File(context.filesDir, "environments/$envId/rootfs").absolutePath
-                                    NativeBridge.extractRootfs(partFile.absolutePath, rootfsDir)
-                                    partFile.delete()
-                                } else {
-                                    deployStage = "Download skipped (${downloadedOk.exceptionOrNull()?.message}); sandbox ready."
-                                }
-                            } else {
-                                deployStage = "2/3 Guest DNS (/etc/resolv.conf), hosts & startxfce.sh written..."
-                                deployProgress = 0.80f
+                            deployStage = "Downloading " + meta.filename
+                            downloadRootfs(meta, partFile, context.filesDir) { fraction ->
+                                deployProgress = fraction * 0.75f
                             }
-
-                            deployStage = "Environment '$envId' provisioned & persisted."
-                            deployProgress = 1.0f
+                            downloadJob = null
+                            nativeInstalling = true
+                            deployStage = "Checking the archive"
+                            val name = environmentName.trim().ifEmpty { if (selectedDistro == "ubuntu") "Ubuntu" else "Debian" }
+                            val result = NativeBridge.installEnvironment(envId, selectedDistro, 2048, partFile, name)
+                            if (!cancelling) partFile.delete()
+                            result.getOrThrow()
+                            deployStage = "Linux shell verified and ready"
+                            deployProgress = 1f
                             isSuccess = true
-                            isDeploying = false
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: Exception) {
-                            errorMessage = e.message
+                            errorMessage = e.message ?: "Environment installation failed"
+                        } finally {
                             isDeploying = false
+                            downloadJob = null
+                            nativeInstalling = false
+                            cancelling = false
                         }
                     }
                 },
-                enabled = !isDeploying,
+                enabled = !isDeploying && artifactInfo != null,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(50.dp),

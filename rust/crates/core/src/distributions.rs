@@ -26,11 +26,11 @@ impl LinuxDistribution for UbuntuDistribution {
     }
 
     fn display_name(&self) -> &str {
-        "Ubuntu 24.04 LTS (Noble Numbat)"
+        "Ubuntu 26.04 LTS"
     }
 
     fn version(&self) -> &str {
-        "24.04"
+        "26.04"
     }
 
     fn supported_architectures(&self) -> &[Architecture] {
@@ -72,11 +72,11 @@ impl LinuxDistribution for DebianDistribution {
     }
 
     fn display_name(&self) -> &str {
-        "Debian 12 (Bookworm)"
+        "Debian 13 (Trixie)"
     }
 
     fn version(&self) -> &str {
-        "12"
+        "13"
     }
 
     fn supported_architectures(&self) -> &[Architecture] {
