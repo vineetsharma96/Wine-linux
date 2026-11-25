@@ -71,7 +71,7 @@ fun DisplayViewportScreen(
 
     // Start display server if available, connect RFB stream, and run active rendering loop
     LaunchedEffect(displayAddress, displayPort, targetWidth, targetHeight) {
-        if (!NativeBridge.isDisplayRunning()) {
+        if (displayPort == 5901 && !NativeBridge.isDisplayRunning()) {
             NativeBridge.startDisplayServer(
                 displayNum = 1,
                 width = targetWidth,
@@ -79,6 +79,15 @@ fun DisplayViewportScreen(
                 dpi = 160,
                 port = displayPort
             )
+            NativeBridge.listEnvironments().onSuccess { envs ->
+                val activeEnv = envs.firstOrNull()
+                if (activeEnv != null) {
+                    NativeBridge.executeGuestCommand(
+                        activeEnv.id,
+                        listOf("/bin/sh", "/usr/local/bin/startxfce.sh")
+                    )
+                }
+            }
         }
 
         val (w, h) = NativeBridge.connectDisplayClient(displayAddress, displayPort)

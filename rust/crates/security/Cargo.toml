@@ -1,0 +1,11 @@
+[package]
+name = "androidpc-security"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }

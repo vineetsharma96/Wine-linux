@@ -72,8 +72,10 @@ dependencies = [
  "androidpc-filesystem",
  "androidpc-linux-runtime",
  "androidpc-logging",
+ "androidpc-networking",
  "androidpc-process",
  "androidpc-runtime-api",
+ "androidpc-security",
  "androidpc-terminal",
  "androidpc-vm",
  "androidpc-wine",
@@ -151,6 +153,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "androidpc-networking"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "androidpc-process"
 version = "0.1.0"
 dependencies = [
@@ -168,6 +178,15 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "androidpc-security"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "sha2",
  "thiserror 2.0.21",
 ]
 

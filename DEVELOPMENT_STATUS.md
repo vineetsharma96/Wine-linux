@@ -28,6 +28,7 @@
 | **QEMU / KVM VM Crate (`androidpc-vm`)** | `QemuCommandBuilder` (aarch64/x86_64), `/dev/kvm` probe, `QemuSupervisor`, `VirtualMachinesScreen.kt` | **DONE** | Verified 3/3 VM unit tests & core VM lifecycle test |
 | **PRoot & Download Hardening** | `LD_LIBRARY_PATH` `libtalloc.so.2` resolution + enforced SHA-256 verification before rootfs extraction | **DONE** | Wired into `ProotEnvironmentManager` & `CreateEnvironmentScreen.kt` |
 | **Interactive Shell PTY & CI** | Non-blocking `poll()` PTY, `spawn_shell` (`forkpty` + PRoot guest shell), `ArtifactsScreen.kt`, `.github/workflows/ci.yml` | **DONE** | Verified workspace tests, ARM64 build, and CI pipeline |
+| **Security, Networking & Instrumentation** | Dedicated `androidpc-security` & `androidpc-networking` crates, bundled `Xvnc`/`startxfce.sh` assets, `androidTest` suite | **DONE** | Verified workspace unit tests & Android instrumentation build |
 | **Hardware Proof-of-Concept** | Executed Phase 1–6 test suites on physical Android 16 device (`6e5b28dd`) | **DONE** | **100% Passed (13/13) on real ARM64 hardware; 29/29 unit tests** |
 
 ---

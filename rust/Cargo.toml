@@ -6,6 +6,8 @@ members = [
     "crates/logging",
     "crates/downloader",
     "crates/filesystem",
+    "crates/security",
+    "crates/networking",
     "crates/process",
     "crates/linux-runtime",
     "crates/display",

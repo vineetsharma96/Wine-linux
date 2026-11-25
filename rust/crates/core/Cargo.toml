@@ -11,6 +11,8 @@ androidpc-configuration = { path = "../configuration" }
 androidpc-logging = { path = "../logging" }
 androidpc-downloader = { path = "../downloader" }
 androidpc-filesystem = { path = "../filesystem" }
+androidpc-security = { path = "../security" }
+androidpc-networking = { path = "../networking" }
 androidpc-process = { path = "../process" }
 androidpc-linux-runtime = { path = "../linux-runtime" }
 androidpc-display = { path = "../display" }

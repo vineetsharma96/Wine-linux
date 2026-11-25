@@ -15,6 +15,8 @@ object AssetInstaller {
         val artifactsDir = File(context.filesDir, "artifacts").apply { mkdirs() }
         val libDir = File(artifactsDir, "lib").apply { mkdirs() }
         val box64Dir = File(artifactsDir, "box64").apply { mkdirs() }
+        val tigerVncDir = File(artifactsDir, "tigervnc-arm64").apply { mkdirs() }
+        val xfceDir = File(artifactsDir, "xfce").apply { mkdirs() }
 
         val runtimeMap = mapOf(
             "runtime/arm64-v8a/proot-arm64" to File(artifactsDir, "proot-arm64"),
@@ -24,7 +26,14 @@ object AssetInstaller {
             "runtime/arm64-v8a/libandroid-shmem.so" to File(libDir, "libandroid-shmem.so"),
             "box64/default.box64rc" to File(box64Dir, "default.box64rc"),
             "box64/env_vars.json" to File(box64Dir, "env_vars.json"),
-            "box64/box64" to File(box64Dir, "box64")
+            "box64/box64" to File(box64Dir, "box64"),
+            "xvnc/Xvnc" to File(tigerVncDir, "Xvnc"),
+            "xvnc/libvnc.so" to File(tigerVncDir, "libvnc.so"),
+            "xvnc/vncserver" to File(tigerVncDir, "vncserver"),
+            "xvnc/vncpasswd" to File(tigerVncDir, "vncpasswd"),
+            "xvnc/vncconfig" to File(tigerVncDir, "vncconfig"),
+            "xvnc/x0vncserver" to File(tigerVncDir, "x0vncserver"),
+            "xfce/startxfce.sh" to File(xfceDir, "startxfce.sh")
         )
 
         val assetManager = context.assets
