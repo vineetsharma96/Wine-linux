@@ -60,4 +60,31 @@ impl StorageManager {
         }
         Ok(())
     }
+
+    pub fn environment_config_path(&self, env_id: &str) -> PathBuf {
+        self.environment_root(env_id).join("config.json")
+    }
+
+    pub fn save_environment_config(&self, env_id: &str, json: &str) -> Result<(), FilesystemError> {
+        let env_root = self.environment_root(env_id);
+        std::fs::create_dir_all(&env_root)?;
+        std::fs::write(self.environment_config_path(env_id), json)?;
+        Ok(())
+    }
+
+    pub fn list_saved_config_jsons(&self) -> Vec<String> {
+        let envs_dir = self.base_dir.join("environments");
+        let mut results = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(envs_dir) {
+            for entry in entries.flatten() {
+                let cfg_path = entry.path().join("config.json");
+                if cfg_path.is_file() {
+                    if let Ok(contents) = std::fs::read_to_string(cfg_path) {
+                        results.push(contents);
+                    }
+                }
+            }
+        }
+        results
+    }
 }

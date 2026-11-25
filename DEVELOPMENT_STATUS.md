@@ -29,6 +29,7 @@
 | **PRoot & Download Hardening** | `LD_LIBRARY_PATH` `libtalloc.so.2` resolution + enforced SHA-256 verification before rootfs extraction | **DONE** | Wired into `ProotEnvironmentManager` & `CreateEnvironmentScreen.kt` |
 | **Interactive Shell PTY & CI** | Non-blocking `poll()` PTY, `spawn_shell` (`forkpty` + PRoot guest shell), `ArtifactsScreen.kt`, `.github/workflows/ci.yml` | **DONE** | Verified workspace tests, ARM64 build, and CI pipeline |
 | **Security, Networking & Instrumentation** | Dedicated `androidpc-security` & `androidpc-networking` crates, bundled `Xvnc`/`startxfce.sh` assets, `androidTest` suite | **DONE** | Verified workspace unit tests & Android instrumentation build |
+| **Ubuntu 24.04 & Debian 12 Rootfs Pipeline** | Real Ubuntu 24.04.5 (`a91d5a93...`) + Debian 12 Bookworm `.tar.xz` (`3a841a79...`, `lzma-rs` + hardlink fallback) | **DONE** | Verified Ubuntu 24.04.5 LTS (`apt 2.8.3 (arm64)`, `/usr/bin/bash`) inside `u0_a768` sandbox on `uke` |
 | **Hardware Proof-of-Concept** | Executed Phase 1–6 test suites on physical Android 16 device (`6e5b28dd`) | **DONE** | **100% Passed (13/13) on real ARM64 hardware; 29/29 unit tests** |
 
 ---

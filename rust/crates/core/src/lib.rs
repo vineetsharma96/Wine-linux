@@ -225,10 +225,11 @@ impl EngineCore {
     }
 
     pub fn extract_rootfs(&self, archive: &Path, dest: &Path) -> Result<u64, CoreError> {
-        let entries = if archive.to_string_lossy().ends_with(".gz")
-            || archive.to_string_lossy().ends_with(".tgz")
-        {
+        let lower = archive.to_string_lossy().to_ascii_lowercase();
+        let entries = if lower.ends_with(".gz") || lower.ends_with(".tgz") {
             ArchiveExtractor::extract_tar_gz(archive, dest)?
+        } else if lower.ends_with(".xz") || lower.ends_with(".txz") {
+            ArchiveExtractor::extract_tar_xz(archive, dest)?
         } else {
             ArchiveExtractor::extract_tar(archive, dest)?
         };
