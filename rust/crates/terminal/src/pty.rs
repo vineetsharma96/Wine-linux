@@ -11,6 +11,8 @@ pub struct DefaultTerminalSession {
     is_closed: Arc<AtomicBool>,
     #[cfg(unix)]
     master_fd: i32,
+    #[cfg(unix)]
+    child_pid: Option<libc::pid_t>,
     #[cfg(not(unix))]
     mock_buffer: Vec<u8>,
 }
@@ -45,6 +47,7 @@ impl DefaultTerminalSession {
                 rows,
                 is_closed: Arc::new(AtomicBool::new(false)),
                 master_fd: fd,
+                child_pid: None,
             };
 
             session.resize(cols, rows)?;
@@ -92,6 +95,95 @@ impl DefaultTerminalSession {
     #[cfg(not(unix))]
     pub fn pts_name(&self) -> Result<String, RuntimeError> {
         Ok(format!("/dev/pts/mock_{}", self.session_id))
+    }
+
+    /// Spawns an interactive shell or PRoot command attached to this PTY's slave device.
+    #[cfg(unix)]
+    pub fn spawn_shell(
+        &mut self,
+        program: &str,
+        args: &[String],
+        env: &[(String, String)],
+        cwd: Option<&str>,
+    ) -> Result<u32, RuntimeError> {
+        use std::ffi::CString;
+
+        let pts = self.pts_name()?;
+        let pts_c = CString::new(pts).map_err(|_| RuntimeError::TerminalError("Invalid pts path".into()))?;
+        let prog_c = CString::new(program).map_err(|_| RuntimeError::TerminalError("Invalid program".into()))?;
+
+        let mut argv_c = Vec::with_capacity(args.len() + 1);
+        argv_c.push(prog_c.clone());
+        for arg in args {
+            argv_c.push(
+                CString::new(arg.as_str())
+                    .map_err(|_| RuntimeError::TerminalError("Invalid arg".into()))?,
+            );
+        }
+        let mut argv_ptrs: Vec<*const libc::c_char> = argv_c.iter().map(|s| s.as_ptr()).collect();
+        argv_ptrs.push(std::ptr::null());
+
+        let mut env_c = Vec::with_capacity(env.len());
+        for (k, v) in env {
+            if let Ok(entry) = CString::new(format!("{k}={v}")) {
+                env_c.push(entry);
+            }
+        }
+        let cwd_c = cwd.and_then(|c| CString::new(c).ok());
+
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(RuntimeError::Io(std::io::Error::last_os_error()));
+        }
+
+        if pid == 0 {
+            unsafe {
+                libc::setsid();
+                let slave_fd = libc::open(pts_c.as_ptr(), libc::O_RDWR);
+                if slave_fd < 0 {
+                    libc::_exit(126);
+                }
+                let _ = libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0);
+                libc::dup2(slave_fd, libc::STDIN_FILENO);
+                libc::dup2(slave_fd, libc::STDOUT_FILENO);
+                libc::dup2(slave_fd, libc::STDERR_FILENO);
+                if slave_fd > libc::STDERR_FILENO {
+                    libc::close(slave_fd);
+                }
+                if self.master_fd >= 0 {
+                    libc::close(self.master_fd);
+                }
+                if let Some(ref dir) = cwd_c {
+                    libc::chdir(dir.as_ptr());
+                }
+                for kv in &env_c {
+                    // putenv takes ownership of a persistent buffer; leak is safe in child pre-exec
+                    let ptr = libc::strdup(kv.as_ptr());
+                    if !ptr.is_null() {
+                        libc::putenv(ptr);
+                    }
+                }
+                libc::execvp(prog_c.as_ptr(), argv_ptrs.as_ptr());
+                libc::_exit(127);
+            }
+        }
+
+        self.child_pid = Some(pid);
+        info!("Spawned interactive PTY child '{}' with PID {}", program, pid);
+        Ok(pid as u32)
+    }
+
+    #[cfg(not(unix))]
+    pub fn spawn_shell(
+        &mut self,
+        program: &str,
+        _args: &[String],
+        _env: &[(String, String)],
+        _cwd: Option<&str>,
+    ) -> Result<u32, RuntimeError> {
+        self.mock_buffer
+            .extend_from_slice(format!("[mock shell attached: {program}]\n").as_bytes());
+        Ok(1000)
     }
 }
 
@@ -158,6 +250,18 @@ impl TerminalSession for DefaultTerminalSession {
 
         #[cfg(unix)]
         {
+            let mut pfd = libc::pollfd {
+                fd: self.master_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut pfd, 1, 0) };
+            if ready <= 0 {
+                return Ok(0);
+            }
+            if (pfd.revents & libc::POLLIN) == 0 {
+                return Ok(0);
+            }
             let n = unsafe {
                 libc::read(
                     self.master_fd,
@@ -166,7 +270,11 @@ impl TerminalSession for DefaultTerminalSession {
                 )
             };
             if n < 0 {
-                return Err(RuntimeError::Io(std::io::Error::last_os_error()));
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EAGAIN) || err.raw_os_error() == Some(libc::EIO) {
+                    return Ok(0);
+                }
+                return Err(RuntimeError::Io(err));
             }
             Ok(n as usize)
         }
@@ -185,6 +293,13 @@ impl TerminalSession for DefaultTerminalSession {
 
         #[cfg(unix)]
         {
+            if let Some(pid) = self.child_pid.take() {
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                    let mut status: libc::c_int = 0;
+                    libc::waitpid(pid, &mut status, libc::WNOHANG);
+                }
+            }
             if self.master_fd >= 0 {
                 unsafe { libc::close(self.master_fd) };
                 self.master_fd = -1;
@@ -219,6 +334,16 @@ mod tests {
         assert_eq!(read, 13);
         assert_eq!(&out[..13], b"echo 'hello'\n");
 
+        assert!(term.close().is_ok());
+    }
+
+    #[test]
+    fn test_terminal_shell_spawn_non_unix_or_pty() {
+        let mut term = DefaultTerminalSession::new("test-pty-shell", 80, 24).unwrap();
+        let pid = term
+            .spawn_shell("/bin/sh", &[], &[("TERM".into(), "xterm-256color".into())], None)
+            .unwrap();
+        assert!(pid > 0);
         assert!(term.close().is_ok());
     }
 }

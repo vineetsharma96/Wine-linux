@@ -77,6 +77,7 @@ object NativeBridge {
     private external fun nativeStopVm(vmId: String): Int
     private external fun nativeDeleteVm(vmId: String): Int
     private external fun nativeListVms(): String
+    private external fun nativeCreateTerminalForEnv(sessionId: String, envId: String, cols: Int, rows: Int): Int
 
     suspend fun initEngine(context: Context): Result<Int> = withContext(Dispatchers.IO) {
         if (!isLoaded) {
@@ -649,6 +650,16 @@ object NativeBridge {
             val listType = object : TypeToken<List<VmStatusData>>() {}.type
             val parsed: List<VmStatusData> = gson.fromJson(raw, listType)
             Result.success(parsed)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun createTerminalForEnv(sessionId: String, envId: String, cols: Int = 80, rows: Int = 24): Result<Int> = withContext(Dispatchers.IO) {
+        if (!isLoaded) return@withContext Result.failure(IllegalStateException("Native engine not loaded"))
+        try {
+            val fd = nativeCreateTerminalForEnv(sessionId, envId, cols, rows)
+            if (fd >= 0) Result.success(fd) else Result.failure(RuntimeException("Create terminal failed ($fd)"))
         } catch (e: Exception) {
             Result.failure(e)
         }

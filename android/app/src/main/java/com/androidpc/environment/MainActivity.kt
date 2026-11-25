@@ -31,6 +31,7 @@ class MainActivity : ComponentActivity() {
         CreateEnvironment,
         DisplayViewport,
         VirtualMachines,
+        Artifacts,
         Settings
     }
 
@@ -162,6 +163,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onOpenTerminal = { currentScreen = Screen.Terminal },
                             onOpenVirtualMachines = { currentScreen = Screen.VirtualMachines },
+                            onOpenArtifacts = { currentScreen = Screen.Artifacts },
                             onOpenSettings = { currentScreen = Screen.Settings }
                         )
                         Screen.Terminal -> TerminalScreen(
@@ -180,6 +182,9 @@ class MainActivity : ComponentActivity() {
                                 activeDisplayPort = vncPort
                                 currentScreen = Screen.DisplayViewport
                             },
+                            onBack = { currentScreen = Screen.Dashboard }
+                        )
+                        Screen.Artifacts -> ArtifactsScreen(
                             onBack = { currentScreen = Screen.Dashboard }
                         )
                         Screen.HealthCheck -> HealthStatusScreen(

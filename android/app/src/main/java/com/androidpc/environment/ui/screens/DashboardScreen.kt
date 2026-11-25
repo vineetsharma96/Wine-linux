@@ -41,6 +41,7 @@ fun DashboardScreen(
     onOpenDisplayViewport: () -> Unit = {},
     onOpenTerminal: () -> Unit = {},
     onOpenVirtualMachines: () -> Unit = {},
+    onOpenArtifacts: () -> Unit = {},
     onOpenSettings: () -> Unit = {}
 ) {
     var showRunExeDialog by remember { mutableStateOf(false) }
@@ -550,20 +551,41 @@ fun DashboardScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            Button(
-                onClick = onOpenVirtualMachines,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(46.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = SurfaceContainer),
-                border = androidx.compose.foundation.BorderStroke(1.dp, AccentPurple),
-                shape = RoundedCornerShape(10.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = "QEMU / KVM Virtual Machines",
-                    color = TextPrimary,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Button(
+                    onClick = onOpenVirtualMachines,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceContainer),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, AccentPurple),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(
+                        text = "QEMU / KVM VMs",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Button(
+                    onClick = onOpenArtifacts,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceContainer),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(
+                        text = "Artifacts",
+                        color = AccentCyan,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
     }

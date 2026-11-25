@@ -1653,3 +1653,43 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
     result.unwrap_or(std::ptr::null_mut())
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeCreateTerminalForEnv(
+    mut env: JNIEnv,
+    _class: JClass,
+    session_id: JString,
+    env_id: JString,
+    cols: jint,
+    rows: jint,
+) -> jint {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sid: String = match env.get_string(&session_id) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let eid: String = match env.get_string(&env_id) {
+            Ok(s) => s.into(),
+            Err(_) => String::new(),
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(core) = guard.as_ref() {
+            let opt_eid = if eid.is_empty() { None } else { Some(eid.as_str()) };
+            match core.create_terminal_session_for_env(
+                &sid,
+                opt_eid,
+                cols.clamp(20, 300) as u16,
+                rows.clamp(10, 120) as u16,
+            ) {
+                Ok(fd) => fd,
+                Err(_) => -2,
+            }
+        } else {
+            -3
+        }
+    }));
+    result.unwrap_or(-99)
+}
+

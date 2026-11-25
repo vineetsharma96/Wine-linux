@@ -285,7 +285,59 @@ impl EngineCore {
     }
 
     pub fn create_terminal_session(&self, id: &str, cols: u16, rows: u16) -> Result<i32, CoreError> {
-        let session = DefaultTerminalSession::new(id, cols, rows).map_err(CoreError::Runtime)?;
+        self.create_terminal_session_for_env(id, None, cols, rows)
+    }
+
+    pub fn create_terminal_session_for_env(
+        &self,
+        id: &str,
+        env_id: Option<&str>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<i32, CoreError> {
+        let mut session = DefaultTerminalSession::new(id, cols, rows).map_err(CoreError::Runtime)?;
+
+        // Determine whether to attach a PRoot guest shell or host Android shell
+        let mut attached = false;
+        if let Some(eid) = env_id {
+            if let Ok(envs) = self.environments.read() {
+                if let Some(mgr) = envs.get(eid) {
+                    let rootfs = &mgr.config().rootfs_directory;
+                    let proot_bin = self.resolve_proot_provider();
+                    let guest_sh = if rootfs.join("bin/bash").exists() {
+                        Some(vec!["/bin/bash".to_string(), "-l".to_string()])
+                    } else if rootfs.join("bin/sh").exists() {
+                        Some(vec!["/bin/sh".to_string()])
+                    } else {
+                        None
+                    };
+                    if let Some(sh_cmd) = guest_sh {
+                        if proot_bin.proot_binary().exists() {
+                            let proot_args = proot_bin.build_proot_command(mgr.config(), &sh_cmd);
+                            let proot_env = mgr.build_guest_env(&[]);
+                            let prog = proot_bin.proot_binary().to_string_lossy().to_string();
+                            let _ = session.spawn_shell(&prog, &proot_args, &proot_env, None);
+                            attached = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !attached {
+            let host_sh = if std::path::Path::new("/system/bin/sh").exists() {
+                "/system/bin/sh"
+            } else {
+                "/bin/sh"
+            };
+            let home_str = self.config.base_data_dir.to_string_lossy().to_string();
+            let env = vec![
+                ("TERM".to_string(), "xterm-256color".to_string()),
+                ("HOME".to_string(), home_str.clone()),
+            ];
+            let _ = session.spawn_shell(host_sh, &["-i".to_string()], &env, Some(&home_str));
+        }
+
         let fd = session.master_fd();
         let mut guard = self
             .terminal_sessions

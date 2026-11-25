@@ -45,11 +45,11 @@ fun TerminalScreen(
     }
 
     LaunchedEffect(sessionId) {
-        val createRes = NativeBridge.createTerminal(sessionId, 80, 24)
+        val createRes = NativeBridge.createTerminalForEnv(sessionId, envId, 80, 24)
         createRes.onSuccess { fd ->
             ptyFd = fd
-            terminalOutput += "PTY session ready (master_fd=$fd, env=$envId).\n"
-            NativeBridge.writeTerminal(sessionId, "echo '[AndroidPC] PTY echo & input bridge active'\n".toByteArray())
+            terminalOutput += "PTY shell attached (master_fd=$fd, env=$envId).\n"
+            NativeBridge.writeTerminal(sessionId, "uname -a\n".toByteArray())
         }.onFailure { err ->
             terminalOutput += "Failed to open PTY: ${err.message}\n"
         }
