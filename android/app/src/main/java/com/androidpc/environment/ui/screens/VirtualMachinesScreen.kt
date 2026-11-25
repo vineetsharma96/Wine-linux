@@ -238,6 +238,11 @@ fun VirtualMachinesScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
+                        Text(
+                            text = "QMP: 127.0.0.1:${vm.qmp_port} | SSH Forward: 127.0.0.1:2222 -> :22",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextMuted
+                        )
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(

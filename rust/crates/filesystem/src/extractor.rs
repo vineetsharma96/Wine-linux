@@ -103,3 +103,22 @@ impl ArchiveExtractor {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flatten_single_rootfs_dir() {
+        let tmp = std::env::temp_dir().join("androidpc_flatten_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let nested = tmp.join("debian-bookworm-aarch64");
+        std::fs::create_dir_all(nested.join("bin")).unwrap();
+        std::fs::write(nested.join("bin").join("bash"), b"elf").unwrap();
+
+        ArchiveExtractor::flatten_single_rootfs_dir(&tmp).unwrap();
+        assert!(tmp.join("bin").join("bash").exists());
+        assert!(!nested.exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

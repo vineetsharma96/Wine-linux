@@ -451,12 +451,15 @@ impl EngineCore {
     }
 
     pub fn execute_environment_command(&self, id: &str, cmd: &[String]) -> Result<ProcessId, CoreError> {
+        let gpu_env = self.get_gpu_acceleration_mode().build_guest_env();
         let mut guard = self
             .environments
             .write()
             .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(manager) = guard.get_mut(id) {
-            manager.execute_guest_command(cmd).map_err(CoreError::Runtime)
+            manager
+                .execute_guest_command_with_env(cmd, &gpu_env)
+                .map_err(CoreError::Runtime)
         } else {
             Err(CoreError::Runtime(
                 androidpc_runtime_api::RuntimeError::Internal(format!("Environment not found: {id}")),
@@ -653,7 +656,13 @@ impl EngineCore {
 
             let mut guest_argv = vec![cmd.program.clone()];
             guest_argv.extend(cmd.args.clone());
-            if let Ok(pid) = env_mgr.execute_guest_command_with_env(&guest_argv, &cmd.env) {
+            let mut merged_env = cmd.env.clone();
+            merged_env.extend(self.get_gpu_acceleration_mode().build_guest_env());
+            let rcfile = self.config.runtime_artifacts_dir.join("box64").join("default.box64rc");
+            if rcfile.exists() {
+                merged_env.push(("BOX64_RCFILE".to_string(), rcfile.display().to_string()));
+            }
+            if let Ok(pid) = env_mgr.execute_guest_command_with_env(&guest_argv, &merged_env) {
                 let _ = self.wine_supervisor.add_wine_pid(env_id, pid);
             }
         }
@@ -693,7 +702,13 @@ impl EngineCore {
             .write()
             .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         if let Some(env_mgr) = guard.get_mut(env_id) {
-            if let Ok(pid) = env_mgr.execute_guest_command_with_env(&guest_argv, &cmd.env) {
+            let mut merged_env = cmd.env.clone();
+            merged_env.extend(self.get_gpu_acceleration_mode().build_guest_env());
+            let rcfile = self.config.runtime_artifacts_dir.join("box64").join("default.box64rc");
+            if rcfile.exists() {
+                merged_env.push(("BOX64_RCFILE".to_string(), rcfile.display().to_string()));
+            }
+            if let Ok(pid) = env_mgr.execute_guest_command_with_env(&guest_argv, &merged_env) {
                 let _ = self.wine_supervisor.add_wine_pid(env_id, pid);
                 spawned_pid = Some(pid);
             }

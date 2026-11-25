@@ -9,28 +9,28 @@
 - [x] ARM64 cross-compilation pipeline with `cargo-ndk` + NDK r26b.
 - [x] Hardware verification on physical Android 16 / Linux 6.1 GKI device (`aarch64`).
 
-## Phase 1: Rootless Linux Runtime Implementation (Next Milestone)
-- [ ] PRoot integration and customized Android-safe binary packaging.
-- [ ] Automated download and SHA-256 verification of Ubuntu 24.04 and Debian 12 ARM64 root filesystems.
-- [ ] Safe archive extraction with path traversal protection (zip-slip defense).
-- [ ] Process supervisor with signal propagation (SIGINT, SIGTERM, SIGHUP).
-- [ ] PTY creation and pseudo-terminal allocation inside the Android sandbox.
+## Phase 1: Rootless Linux Runtime Implementation (Core Complete & Gate Verified)
+- [x] PRoot integration and Android-safe `jniLibs` + `libtalloc.so.2` packaging (`docs/PROOT_COMPATIBILITY.md`).
+- [x] Download and SHA-256 verification of Ubuntu 24.04.5 LTS and Debian 12 Bookworm ARM64 root filesystems.
+- [x] Safe archive extraction (`.tar`, `.tar.gz`, `.tar.xz`) with path traversal protection and Android hardlink fallback.
+- [x] Process supervisor with signal propagation (`SIGINT`, `SIGTERM`, `SIGHUP`).
+- [x] PTY creation and interactive shell attachment (`DefaultTerminalSession::spawn_shell` + `clearenv()`).
 
-## Phase 2: Display & Desktop Environment Integration
-- [ ] TigerVNC (Xvnc) server lifecycle management inside guest userspace.
-- [ ] Custom integrated Android VNC client / RFB protocol renderer with touch-to-mouse translation.
-- [ ] XFCE 4 desktop session configuration and auto-startup scripts.
-- [ ] Optional Termux:X11 display bridge for low-latency hardware acceleration.
+## Phase 2: Display & Desktop Environment Integration (Core Complete)
+- [x] TigerVNC (`Xvnc`) server lifecycle management with `LD_LIBRARY_PATH` resolution.
+- [x] Custom integrated Android VNC client / RFB 003.008 renderer with touch-to-mouse & keyboard input.
+- [x] XFCE 4 desktop session launcher (`startxfce.sh`) and viewport auto-launch hook.
+- [x] Optional Termux:X11 socket backend (`TermuxX11Backend`).
 
 ## Phase 3: Hardware Acceleration & Audio
 - [x] VirGL / Turnip / Zink hardware acceleration environment layer (`GpuAccelerationMode` + `SettingsScreen.kt`).
 - [x] Audio TCP sink (`127.0.0.1:4713`) with Android `AudioTrack` bridge (`AudioBridgePlayer`).
 - [x] Android input handling (touch-to-mouse, drag, virtual keyboard Ctrl/Alt modifiers).
 
-## Phase 4: Windows Application Compatibility (Future)
-- [ ] Box64 userspace emulation for x86_64 Windows binaries on ARM64.
-- [ ] Wine / Proton integration inside the rootless Linux guest.
-- [ ] DXVK / VKD3D Direct3D-to-Vulkan translation.
+## Phase 4: Windows Application Compatibility (Core Complete)
+- [x] Box64 userspace emulation (`default.box64rc` + Dynarec env builder) for x86_64 Windows binaries on ARM64.
+- [x] Wine prefix lifecycle (`WineCommandBuilder`, `WineProcessSupervisor`, `DashboardScreen` controls).
+- [x] GPU acceleration (`LLVMpipe` / `VirGL` / `Turnip+Zink`) env injection into Wine & Box64.
 
 ## Phase 5: Virtual Machine Virtualization (In Progress — Core & UI Implemented)
 - [x] QEMU crate (`androidpc-vm`) with `aarch64` (`virt`) & `x86_64` (`q35`) command builder, VirtIO disk/network, VNC & QMP integration.

@@ -175,6 +175,29 @@ pub struct VmStatusInfo {
     pub disk_exists: bool,
 }
 
+pub struct QmpClient;
+
+impl QmpClient {
+    /// Sends QMP capability negotiation and `query-status` to a running QEMU instance.
+    pub fn query_status(qmp_port: u16) -> Result<String, VmError> {
+        use std::io::{Read, Write};
+        use std::net::{SocketAddr, TcpStream};
+        use std::time::Duration;
+
+        let addr: SocketAddr = ([127, 0, 0, 1], qmp_port).into();
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500))?;
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+
+        let mut buf = [0u8; 2048];
+        let _ = stream.read(&mut buf);
+        stream.write_all(b"{\"execute\":\"qmp_capabilities\"}\n")?;
+        let _ = stream.read(&mut buf);
+        stream.write_all(b"{\"execute\":\"query-status\"}\n")?;
+        let n = stream.read(&mut buf).unwrap_or(0);
+        Ok(String::from_utf8_lossy(&buf[..n]).to_string())
+    }
+}
+
 pub struct QemuCommandBuilder;
 
 impl QemuCommandBuilder {
