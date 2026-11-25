@@ -26,6 +26,10 @@ use androidpc_runtime_api::{
     ProcessCommand, ProcessId, RuntimeProvider, SystemDiagnostics, TerminalSession,
 };
 use androidpc_terminal::DefaultTerminalSession;
+use androidpc_box64::{
+    Box64CompatibilityLayer, Box64EnvironmentConfig, Box64ExecutionOutcome, Box64ExecutionPlan,
+    Box64ExecutionRecord, Box64InstallationStatus, CompatibilitySuiteReport,
+};
 use androidpc_wine::{
     WineArch, WineCommandBuilder, WineConfig, WineProcessSupervisor, WineStatusInfo,
 };
@@ -96,6 +100,7 @@ pub struct EngineCore {
     pub audio_sink: RwLock<AudioTcpSink>,
     pub wine_supervisor: Arc<WineProcessSupervisor>,
     pub vm_supervisor: QemuSupervisor,
+    pub box64: Box64CompatibilityLayer,
     pub gpu_mode: RwLock<androidpc_display::GpuAccelerationMode>,
 }
 
@@ -164,6 +169,7 @@ impl EngineCore {
             audio_sink: RwLock::new(AudioTcpSink::default()),
             wine_supervisor: Arc::new(WineProcessSupervisor::new()),
             vm_supervisor,
+            box64: Box64CompatibilityLayer::new(config.runtime_artifacts_dir.clone()),
             gpu_mode: RwLock::new(androidpc_display::GpuAccelerationMode::default()),
         };
 
@@ -678,15 +684,33 @@ impl EngineCore {
     }
 
     pub fn execute_environment_command(&self, id: &str, cmd: &[String]) -> Result<ProcessId, CoreError> {
-        let gpu_env = self.get_gpu_acceleration_mode().build_guest_env();
+        let mut extra_env = self.get_gpu_acceleration_mode().build_guest_env();
         let mut guard = self
             .environments
             .write()
             .map_err(|_| CoreError::SubsystemFailure("Lock poisoned".into()))?;
         self.ensure_no_package_operation(id)?;
         if let Some(manager) = guard.get_mut(id) {
+            // Architecture-aware routing: native ARM64 runs directly; x86-64 routes via Box64.
+            let final_cmd: Vec<String> = if let Some(program) = cmd.first() {
+                match self.box64.plan_execution(
+                    &manager.config().rootfs_directory,
+                    program,
+                    &cmd[1..],
+                    &manager.config().box64,
+                ) {
+                    Ok(plan) => {
+                        extra_env.extend(plan.extra_env);
+                        plan.guest_command
+                    }
+                    Err(androidpc_box64::CompatibilityError::BinaryNotFound(_)) => cmd.to_vec(),
+                    Err(err) => return Err(CoreError::SubsystemFailure(err.to_string())),
+                }
+            } else {
+                cmd.to_vec()
+            };
             manager
-                .execute_guest_command_with_env(cmd, &gpu_env)
+                .execute_guest_command_with_env(&final_cmd, &extra_env)
                 .map_err(CoreError::Runtime)
         } else {
             Err(CoreError::Runtime(
@@ -1142,6 +1166,129 @@ impl EngineCore {
             .read()
             .map(|g| *g)
             .unwrap_or_default()
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 4.1 — Box64 x86-64 Compatibility Layer APIs
+    // -------------------------------------------------------------------------
+
+    pub fn get_box64_status(&self, env_id: Option<&str>) -> Box64InstallationStatus {
+        let rootfs = env_id.and_then(|id| {
+            self.environments
+                .read()
+                .ok()
+                .and_then(|envs| envs.get(id).map(|m| m.config().rootfs_directory.clone()))
+        });
+        self.box64.probe_installation(rootfs.as_deref())
+    }
+
+    pub fn get_box64_config(&self, env_id: &str) -> Result<Box64EnvironmentConfig, CoreError> {
+        let envs = self
+            .environments
+            .read()
+            .map_err(|_| CoreError::SubsystemFailure("Environment lock poisoned".into()))?;
+        if let Some(manager) = envs.get(env_id) {
+            Ok(manager.config().box64.clone())
+        } else {
+            Ok(Box64EnvironmentConfig::default())
+        }
+    }
+
+    pub fn update_box64_config(
+        &self,
+        env_id: &str,
+        config: Box64EnvironmentConfig,
+    ) -> Result<Box64EnvironmentConfig, CoreError> {
+        config.validate()?;
+        let mut envs = self
+            .environments
+            .write()
+            .map_err(|_| CoreError::SubsystemFailure("Environment lock poisoned".into()))?;
+        let manager = envs
+            .get_mut(env_id)
+            .ok_or_else(|| CoreError::SubsystemFailure(format!("Environment not installed: {env_id}")))?;
+        let previous = manager.config().box64.clone();
+        manager.set_box64_config(config.clone());
+        let root = manager
+            .config()
+            .rootfs_directory
+            .parent()
+            .ok_or_else(|| CoreError::SubsystemFailure("Missing environment directory".into()))?;
+        if let Err(err) = self
+            .storage
+            .save_config_at(root, &serde_json::to_vec_pretty(manager.config())?)
+        {
+            manager.set_box64_config(previous);
+            return Err(err.into());
+        }
+        let _ = self
+            .box64
+            .ensure_guest_box64_staged(&manager.config().rootfs_directory, &config);
+        Ok(config)
+    }
+
+    pub fn inspect_compatible_binary(
+        &self,
+        env_id: &str,
+        guest_binary: &str,
+        args: &[String],
+    ) -> Result<Box64ExecutionPlan, CoreError> {
+        let envs = self
+            .environments
+            .read()
+            .map_err(|_| CoreError::SubsystemFailure("Environment lock poisoned".into()))?;
+        let manager = envs
+            .get(env_id)
+            .ok_or_else(|| CoreError::SubsystemFailure(format!("Environment not installed: {env_id}")))?;
+        self.box64
+            .plan_execution(
+                &manager.config().rootfs_directory,
+                guest_binary,
+                args,
+                &manager.config().box64,
+            )
+            .map_err(|e| CoreError::SubsystemFailure(e.to_string()))
+    }
+
+    pub fn execute_compatible_binary(
+        &self,
+        env_id: &str,
+        guest_binary: &str,
+        args: &[String],
+    ) -> Result<Box64ExecutionOutcome, CoreError> {
+        self.ensure_no_package_operation(env_id)?;
+        let gpu_env = self.get_gpu_acceleration_mode().build_guest_env();
+        let provider = self.resolve_proot_provider();
+        let envs = self
+            .environments
+            .read()
+            .map_err(|_| CoreError::SubsystemFailure("Environment lock poisoned".into()))?;
+        let manager = envs
+            .get(env_id)
+            .ok_or_else(|| CoreError::SubsystemFailure(format!("Environment not installed: {env_id}")))?;
+        Ok(self
+            .box64
+            .execute_and_capture(manager, &provider, guest_binary, args, &gpu_env))
+    }
+
+    pub fn run_box64_compatibility_suite(&self, env_id: Option<&str>) -> CompatibilitySuiteReport {
+        let (rootfs, box64_cfg) = env_id
+            .and_then(|id| {
+                self.environments.read().ok().and_then(|envs| {
+                    envs.get(id).map(|m| {
+                        (
+                            Some(m.config().rootfs_directory.clone()),
+                            m.config().box64.clone(),
+                        )
+                    })
+                })
+            })
+            .unwrap_or_else(|| (None, Box64EnvironmentConfig::default()));
+        androidpc_box64::build_compatibility_test_matrix(&self.box64, rootfs.as_deref(), &box64_cfg)
+    }
+
+    pub fn list_box64_execution_history(&self, limit: usize) -> Vec<Box64ExecutionRecord> {
+        self.box64.execution_history(limit)
     }
 }
 

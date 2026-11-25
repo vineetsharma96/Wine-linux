@@ -78,6 +78,189 @@ impl EngineConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Box64LogLevel {
+    None,
+    Errors,
+    Info,
+    Verbose,
+}
+
+impl Default for Box64LogLevel {
+    fn default() -> Self {
+        Self::Errors
+    }
+}
+
+impl Box64LogLevel {
+    pub fn as_box64_env_value(self) -> &'static str {
+        match self {
+            Self::None => "0",
+            Self::Errors => "1",
+            Self::Info => "2",
+            Self::Verbose => "3",
+        }
+    }
+
+    pub fn from_str_lossy(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "0" | "none" | "off" => Self::None,
+            "2" | "info" => Self::Info,
+            "3" | "verbose" | "debug" => Self::Verbose,
+            _ => Self::Errors,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Box64AppOverride {
+    #[serde(default)]
+    pub dynarec_enabled: Option<bool>,
+    #[serde(default)]
+    pub dynarec_safeflags: Option<u8>,
+    #[serde(default)]
+    pub dynarec_strongmem: Option<u8>,
+    #[serde(default)]
+    pub dynarec_bigblock: Option<u8>,
+    #[serde(default)]
+    pub log_level: Option<Box64LogLevel>,
+    #[serde(default)]
+    pub extra_env: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Box64EnvironmentConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_box64_version")]
+    pub binary_version: String,
+    #[serde(default = "default_true")]
+    pub dynarec_enabled: bool,
+    /// Conservative default: 1 (preserves flags on calls/returns; avoids experimental 0).
+    #[serde(default = "default_one")]
+    pub dynarec_safeflags: u8,
+    /// Conservative default: 1 (enforces stronger x86-like memory ordering on ARM64).
+    #[serde(default = "default_one")]
+    pub dynarec_strongmem: u8,
+    /// Conservative default: 1 (single-block/conservative compilation; avoids experimental 3).
+    #[serde(default = "default_one")]
+    pub dynarec_bigblock: u8,
+    #[serde(default)]
+    pub log_level: Box64LogLevel,
+    #[serde(default)]
+    pub dynarec_log_level: u8,
+    #[serde(default = "default_true")]
+    pub show_segv: bool,
+    #[serde(default = "default_true")]
+    pub show_bt: bool,
+    #[serde(default = "default_guest_x86_64_lib_paths")]
+    pub library_search_paths: Vec<String>,
+    #[serde(default)]
+    pub env_vars: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub app_overrides: std::collections::BTreeMap<String, Box64AppOverride>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_one() -> u8 {
+    1
+}
+
+fn default_box64_version() -> String {
+    "0.4.4".to_string()
+}
+
+fn default_guest_x86_64_lib_paths() -> Vec<String> {
+    vec![
+        "/usr/local/lib/box64-x86_64-linux-gnu".to_string(),
+        "/usr/lib/x86_64-linux-gnu".to_string(),
+        "/lib/x86_64-linux-gnu".to_string(),
+    ]
+}
+
+impl Default for Box64EnvironmentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            binary_version: default_box64_version(),
+            dynarec_enabled: true,
+            dynarec_safeflags: 1,
+            dynarec_strongmem: 1,
+            dynarec_bigblock: 1,
+            log_level: Box64LogLevel::Errors,
+            dynarec_log_level: 0,
+            show_segv: true,
+            show_bt: true,
+            library_search_paths: default_guest_x86_64_lib_paths(),
+            env_vars: std::collections::BTreeMap::new(),
+            app_overrides: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl Box64EnvironmentConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.dynarec_safeflags > 2 {
+            return Err(ConfigError::ValidationError(
+                "BOX64_DYNAREC_SAFEFLAGS must be 0, 1, or 2".into(),
+            ));
+        }
+        if self.dynarec_strongmem > 3 {
+            return Err(ConfigError::ValidationError(
+                "BOX64_DYNAREC_STRONGMEM must be between 0 and 3".into(),
+            ));
+        }
+        if self.dynarec_bigblock > 3 {
+            return Err(ConfigError::ValidationError(
+                "BOX64_DYNAREC_BIGBLOCK must be between 0 and 3".into(),
+            ));
+        }
+        if self.dynarec_log_level > 3 {
+            return Err(ConfigError::ValidationError(
+                "BOX64_DYNAREC_LOG must be between 0 and 3".into(),
+            ));
+        }
+        for path in &self.library_search_paths {
+            let trimmed = path.trim();
+            if !trimmed.starts_with('/') || trimmed.contains("..") {
+                return Err(ConfigError::ValidationError(format!(
+                    "Invalid guest library search path: '{path}'"
+                )));
+            }
+            if is_android_bionic_path(trimmed) {
+                return Err(ConfigError::ValidationError(format!(
+                    "Guest library path '{path}' must not reference Android/Bionic host libraries"
+                )));
+            }
+        }
+        for (key, value) in &self.env_vars {
+            if key.is_empty()
+                || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                || value.chars().any(char::is_control)
+            {
+                return Err(ConfigError::ValidationError(format!(
+                    "Invalid Box64 environment variable '{key}'"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn is_android_bionic_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.starts_with("/system/lib")
+        || lower.starts_with("/system/bin/linker")
+        || lower.starts_with("/vendor/lib")
+        || lower.starts_with("/apex/")
+        || lower.starts_with("/odm/lib")
+        || lower.starts_with("/product/lib")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvironmentConfig {
     #[serde(default = "environment_schema_version")]
@@ -101,6 +284,8 @@ pub struct EnvironmentConfig {
     pub display: DisplayConfig,
     pub default_username: String,
     pub custom_mounts: Vec<(PathBuf, PathBuf)>, // host -> guest
+    #[serde(default)]
+    pub box64: Box64EnvironmentConfig,
 }
 
 fn environment_schema_version() -> u32 {
@@ -144,6 +329,7 @@ impl EnvironmentConfig {
             },
             default_username: "user".to_string(),
             custom_mounts: Vec::new(),
+            box64: Box64EnvironmentConfig::default(),
         }
     }
 
@@ -167,6 +353,7 @@ impl EnvironmentConfig {
                 height: self.display.height,
             });
         }
+        self.box64.validate()?;
         Ok(())
     }
 

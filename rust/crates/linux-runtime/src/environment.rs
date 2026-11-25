@@ -85,6 +85,10 @@ impl ProotEnvironmentManager {
         self.config.last_started_at_epoch_ms = timestamp;
     }
 
+    pub fn set_box64_config(&mut self, box64: androidpc_configuration::Box64EnvironmentConfig) {
+        self.config.box64 = box64;
+    }
+
     pub fn setup_networking_and_userspace(&self) -> Result<(), RuntimeError> {
         let rootfs = self.config.rootfs_directory.canonicalize()?;
         let create_guest_dir = |relative: &str| -> Result<std::path::PathBuf, RuntimeError> {

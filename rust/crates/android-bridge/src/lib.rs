@@ -2282,3 +2282,161 @@ pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_native
     result.unwrap_or(-99)
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeGetBox64Status(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let eid: String = env.get_string(&env_id).map(Into::into).unwrap_or_default();
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let status = match guard.as_ref() {
+            Some(core) => core.get_box64_status(if eid.is_empty() { None } else { Some(eid.as_str()) }),
+            None => androidpc_box64::Box64CompatibilityLayer::new(EngineConfig::default().runtime_artifacts_dir)
+                .probe_installation(None),
+        };
+        let json = serde_json::to_string(&status).unwrap_or_else(|_| "{}".to_string());
+        create_jstring(&mut env, &json)
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeGetBox64Config(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let eid: String = env.get_string(&env_id).map(Into::into).unwrap_or_default();
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let cfg = guard
+            .as_ref()
+            .and_then(|core| core.get_box64_config(&eid).ok())
+            .unwrap_or_default();
+        let json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
+        create_jstring(&mut env, &json)
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeUpdateBox64Config(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+    config_json: JString,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let eid: String = match env.get_string(&env_id) {
+            Ok(s) => s.into(),
+            Err(_) => return create_jstring(&mut env, "{\"error\":\"Invalid environment id\"}"),
+        };
+        let raw_cfg: String = match env.get_string(&config_json) {
+            Ok(s) => s.into(),
+            Err(_) => return create_jstring(&mut env, "{\"error\":\"Invalid Box64 config JSON\"}"),
+        };
+        let parsed: androidpc_configuration::Box64EnvironmentConfig = match serde_json::from_str(&raw_cfg) {
+            Ok(c) => c,
+            Err(e) => return create_jstring(&mut env, &format!("{{\"error\":\"{}\"}}", e.to_string().replace('"', "'"))),
+        };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let json = match guard.as_ref() {
+            Some(core) => match core.update_box64_config(&eid, parsed) {
+                Ok(saved) => serde_json::to_string(&saved).unwrap_or_else(|_| "{}".to_string()),
+                Err(e) => format!("{{\"error\":\"{}\"}}", e.to_string().replace('"', "'")),
+            },
+            None => "{\"error\":\"Engine not initialized\"}".to_string(),
+        };
+        create_jstring(&mut env, &json)
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeExecuteCompatibleBinary(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+    binary_path: JString,
+    args_json: JString,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let eid: String = env.get_string(&env_id).map(Into::into).unwrap_or_default();
+        let bin: String = env.get_string(&binary_path).map(Into::into).unwrap_or_default();
+        let args_str: String = env.get_string(&args_json).map(Into::into).unwrap_or_else(|_| "[]".to_string());
+        let args: Vec<String> = serde_json::from_str(&args_str).unwrap_or_default();
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let json = match guard.as_ref() {
+            Some(core) => match core.execute_compatible_binary(&eid, &bin, &args) {
+                Ok(outcome) => serde_json::to_string(&outcome).unwrap_or_else(|_| "{}".to_string()),
+                Err(e) => format!("{{\"error\":\"{}\"}}", e.to_string().replace('"', "'")),
+            },
+            None => "{\"error\":\"Engine not initialized\"}".to_string(),
+        };
+        create_jstring(&mut env, &json)
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeRunBox64Suite(
+    mut env: JNIEnv,
+    _class: JClass,
+    env_id: JString,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let eid: String = env.get_string(&env_id).map(Into::into).unwrap_or_default();
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let report = match guard.as_ref() {
+            Some(core) => core.run_box64_compatibility_suite(if eid.is_empty() { None } else { Some(eid.as_str()) }),
+            None => {
+                let layer = androidpc_box64::Box64CompatibilityLayer::new(EngineConfig::default().runtime_artifacts_dir);
+                androidpc_box64::build_compatibility_test_matrix(&layer, None, &Default::default())
+            }
+        };
+        let json = serde_json::to_string(&report).unwrap_or_else(|_| "{}".to_string());
+        create_jstring(&mut env, &json)
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_androidpc_environment_bridge_NativeBridge_nativeGetBox64History(
+    mut env: JNIEnv,
+    _class: JClass,
+    limit: jint,
+) -> jstring {
+    let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let safe_limit = if limit <= 0 { 25 } else { limit as usize };
+        let guard = match ENGINE_INSTANCE.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let history = guard
+            .as_ref()
+            .map(|core| core.list_box64_execution_history(safe_limit))
+            .unwrap_or_default();
+        let json = serde_json::to_string(&history).unwrap_or_else(|_| "[]".to_string());
+        create_jstring(&mut env, &json)
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+

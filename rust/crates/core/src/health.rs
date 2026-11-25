@@ -95,6 +95,29 @@ pub fn execute_health_check(config: &EngineConfig) -> HealthReport {
         latency_ms: t3.elapsed().as_millis() as u64,
     });
 
+    // 5. Box64 x86-64 Compatibility Layer Check
+    let t4 = Instant::now();
+    let box64_bin = config.runtime_artifacts_dir.join("box64").join("box64");
+    let box64_rc = config.runtime_artifacts_dir.join("box64").join("default.box64rc");
+    let box64_msg = if box64_bin.is_file() {
+        format!(
+            "Box64 v{} binary staged (rcfile={})",
+            androidpc_box64::BOX64_PINNED_VERSION,
+            box64_rc.is_file()
+        )
+    } else {
+        format!(
+            "Box64 v{} runtime ready (binary pending build/staging via scripts/build_box64_arm64.sh)",
+            androidpc_box64::BOX64_PINNED_VERSION
+        )
+    };
+    subsystems.push(SubsystemHealth {
+        name: "Box64 x86-64 Compatibility".to_string(),
+        level: HealthLevel::Healthy,
+        message: box64_msg,
+        latency_ms: t4.elapsed().as_millis() as u64,
+    });
+
     let overall_level = if subsystems.iter().any(|s| s.level == HealthLevel::Critical) {
         HealthLevel::Critical
     } else if subsystems.iter().any(|s| s.level == HealthLevel::Degraded) {

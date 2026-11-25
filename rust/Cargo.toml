@@ -13,6 +13,7 @@ members = [
     "crates/display",
     "crates/audio",
     "crates/terminal",
+    "crates/box64",
     "crates/wine",
     "crates/vm",
     "crates/core",

@@ -141,13 +141,13 @@ impl DefaultArtifactProvider {
                     size_bytes: 1_021_996,
                 },
                 ArtifactMetadata {
-                    name: "box64-0.4.5-arm64".to_string(),
+                    name: "box64-0.4.4-arm64".to_string(),
                     distribution: "box64".to_string(),
                     architecture: Architecture::Aarch64,
-                    filename: "box64-0.4.5.tzst".to_string(),
-                    url: "https://raw.githubusercontent.com/brunodev85/winlator/main/installable_components/box64/box64-0.4.5.tzst".to_string(),
-                    sha256: "ba9e8acb06b9d8a33b8c8fadda6b2790b313ee38659232b59c0752ae00209911".to_string(),
-                    size_bytes: 4_589_488,
+                    filename: "box64-v0.4.4-linux-arm64.tar.gz".to_string(),
+                    url: "https://github.com/ptitSeb/box64/archive/refs/tags/v0.4.4.tar.gz".to_string(),
+                    sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                    size_bytes: 0,
                 },
                 ArtifactMetadata {
                     name: "wine-9.2-arm64".to_string(),

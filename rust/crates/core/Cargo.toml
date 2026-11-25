@@ -18,6 +18,7 @@ androidpc-linux-runtime = { path = "../linux-runtime" }
 androidpc-display = { path = "../display" }
 androidpc-audio = { path = "../audio" }
 androidpc-terminal = { path = "../terminal" }
+androidpc-box64 = { path = "../box64" }
 androidpc-wine = { path = "../wine" }
 androidpc-vm = { path = "../vm" }
 serde.workspace = true

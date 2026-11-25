@@ -19,6 +19,7 @@ androidpc-process = { path = "../process" }
 androidpc-linux-runtime = { path = "../linux-runtime" }
 androidpc-display = { path = "../display" }
 androidpc-terminal = { path = "../terminal" }
+androidpc-box64 = { path = "../box64" }
 androidpc-wine = { path = "../wine" }
 androidpc-vm = { path = "../vm" }
 androidpc-core = { path = "../core" }

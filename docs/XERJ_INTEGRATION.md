@@ -15,3 +15,14 @@ $XERJ = "C:\Users\abc\AppData\Local\Programs\xerj\xerj.exe"
 & $XERJ def "start_desktop_session" --prefix androidpc
 & $XERJ search "DirectByteBuffer framebuffer" --prefix androidpc
 ```
+
+## Phase 4.1 Refresh (Pending Local Windows XERJ Run)
+Phase 4.1 added `rust/crates/box64/`, `scripts/build_box64_arm64.sh`, `scripts/build_box64_test_binaries.sh`, `app/src/main/java/com/androidpc/environment/ui/screens/CompatibilityScreen.kt`, and `docs/research/BOX64_*.md` / `ARM64_X86_COMPATIBILITY.md` (and migrated the Android Gradle project to root `app/`). Because the cloud build environment cannot reach the local Windows XERJ node (`http://127.0.0.1:9200`), run the following refresh on the local development workstation after pulling changes:
+
+```powershell
+$XERJ = "C:\Users\abc\AppData\Local\Programs\xerj\xerj.exe"
+& $XERJ autoindex . --prefix androidpc --code-analyzer code --workers 2
+& $XERJ def "Box64CompatibilityLayer" --prefix androidpc
+& $XERJ search "inspect_elf_bytes android bionic" --prefix androidpc
+```
+

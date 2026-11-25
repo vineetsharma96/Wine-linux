@@ -1,0 +1,16 @@
+# Android PC Environment — Conservative Default Box64 Configuration
+# Upstream: https://github.com/ptitSeb/box64 (MIT License)
+# Target version: v0.4.4 (ARM64 Linux glibc guest inside PRoot)
+#
+# Conservative defaults prioritize stability and deterministic diagnostics
+# over aggressive or experimental dynarec flags.
+
+[*]
+BOX64_DYNAREC=1
+BOX64_DYNAREC_SAFEFLAGS=1
+BOX64_DYNAREC_STRONGMEM=1
+BOX64_DYNAREC_BIGBLOCK=1
+BOX64_LOG=1
+BOX64_DYNAREC_LOG=0
+BOX64_SHOWSEGV=1
+BOX64_SHOWBT=1

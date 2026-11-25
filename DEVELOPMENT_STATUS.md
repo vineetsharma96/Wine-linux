@@ -1,7 +1,15 @@
 # Development Status — Android PC Environment
 
 *Last updated: 2026-11-25*
-*Current work: Stage 3.2 native display presentation on Xiaomi Pad 7 (Android 16 ARM64).*
+*Current work: Star Plus UI redesign & Phase 4.1 Box64 integration (Rust engine, build pipeline, Android Compatibility UI, and research docs implemented; cross-compiled Box64 binary, `cargo-ndk` rebuild, and Xiaomi Pad 7 device verification pending).*
+
+## Phase 4.1 — Box64 Integration & Star Plus UI Redesign
+
+- **Star Plus UI Redesign**: Migrated Android Gradle project to repository root (`app/`, Gradle 9.3.1, AGP 9.1.1, Kotlin 2.2.21) and redesigned the Compose UI to match the Star Plus dark obsidian/starlight visual system (`Color.kt`, `Type.kt` with bundled Space Grotesk / Inter / JetBrains Mono fonts, `Theme.kt`, `SplashScreen.kt`, `ModalNavigationDrawer` in `MainActivity.kt`, container-centric `DashboardScreen.kt`, and dedicated `CompatibilityScreen.kt`) while preserving all working Ubuntu/Debian PRoot, Terminal, XFCE/Xvnc Display, Backups, VMs, and Artifacts screens without adding unrelated features.
+- **Rust Box64 Compatibility Layer (`rust/crates/box64`)**: Implemented pure-Rust ELF32/ELF64 inspection (`elf.rs`), Android Bionic ABI isolation checks, `DT_NEEDED` guest library resolution (`resolver.rs`), per-environment `Box64EnvironmentConfig` with conservative defaults (`BOX64_DYNAREC=1`, `SAFEFLAGS=1`, `STRONGMEM=1`, `BIGBLOCK=1`, `BOX64_LOG=1`) and per-app overrides (`env.rs`), explicit ARM64-vs-x86-64 execution routing and bounded execution history (`router.rs`), and Categories A–D compatibility test suite (`suite.rs`). Integrated into `androidpc-configuration`, `androidpc-linux-runtime`, `androidpc-core` (including `"Box64 x86-64 Compatibility"` health check), `androidpc-downloader`, and `androidpc-android-bridge` (6 new JNI exports with `UnsatisfiedLinkError` fallback in `NativeBridge.kt` until `libandroidpc_engine.so` is rebuilt).
+- **Reproducible Build & Test Harness**: Added `scripts/build_box64_arm64.sh` (cross-compiles pinned Box64 `v0.4.4` MIT for `aarch64-linux-gnu` glibc with `-DARM64=1 -DARM_DYNAREC=ON -DBAD_SIGNAL=ON -DBOX32=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo` and verifies non-Bionic ELF linkage), `scripts/build_box64_test_binaries.sh` (self-authored ARM64 & x86-64 `compat_probe` test binaries), and `app/src/main/assets/box64/default.box64rc`.
+- **Documentation**: Added [BOX64_RESEARCH.md](docs/research/BOX64_RESEARCH.md), [ARM64_X86_COMPATIBILITY.md](docs/research/ARM64_X86_COMPATIBILITY.md), [BOX64_ANDROID_BUILD.md](docs/research/BOX64_ANDROID_BUILD.md), and [BOX64_PERFORMANCE.md](docs/research/BOX64_PERFORMANCE.md), and updated [VERSION_INVENTORY.md](docs/VERSION_INVENTORY.md), [TECHNICAL_DECISIONS.md](docs/TECHNICAL_DECISIONS.md), [WINDOWS_COMPATIBILITY_RESEARCH.md](docs/research/WINDOWS_COMPATIBILITY_RESEARCH.md), and [XERJ_INTEGRATION.md](docs/XERJ_INTEGRATION.md).
+- **Pending Verification (No Unexecuted Claims)**: `cargo test --workspace`, `scripts/build_box64_arm64.sh`, `cargo-ndk` rebuild of `app/src/main/jniLibs/arm64-v8a/libandroidpc_engine.so`, local Windows XERJ index refresh, and physical Xiaomi Pad 7 Categories A–D acceptance tests & benchmarks have **not** yet been executed in this cloud container. Wine integration (Phase 4.2) remains gated until Box64 passes on hardware.
 
 ## Stage 3.2 renderer
 
